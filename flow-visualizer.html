@@ -1,0 +1,1315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WhatsApp Restaurant AI Host - How It Works (Step by Step)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    --bg-0: #05070d;
+    --bg-1: #0a0f1a;
+    --bg-2: #111a2d;
+    --grid: rgba(80,120,200,.05);
+    --txt: #d7e1f0;
+    --txt-dim: #7b8aa5;
+    --txt-mute: #4a5669;
+    --edge: rgba(120,160,220,.18);
+    --edge-hot: rgba(200,230,255,.9);
+    --edge-active: #5aa4ff;
+    --glass: rgba(20,30,50,.55);
+    --glass-brd: rgba(120,180,255,.2);
+
+    /* Edge-kind palette, re-mapped for the WhatsApp WebRTC variant.
+       Two-plane rule: signaling rides solid lines, media rides dashed
+       lines. Colors group the traffic kinds so the topology reads at
+       a glance even when nothing is animating. */
+    --sig: #ff9f43;        /* HTTPS signaling (webhook, invoke, calls) */
+    --audio-in: #22d3ee;   /* caller audio (up, DTLS/SRTP via TURN) */
+    --audio-out: #d946ef;  /* agent audio (down, DTLS/SRTP via TURN) */
+    --ctrl: #ffffff;       /* control / handshake (ICE config, teardown) */
+    --tool: #34d399;       /* MCP + REST tool calls */
+    --db: #a78bfa;         /* DynamoDB + Location + window/secret state */
+    --mem: #fb7185;        /* shared AgentCore Memory read/write (all 3 runtimes) */
+    --transcribe: #facc15; /* legacy (unused): Amazon Transcribe is removed from this design */
+
+    --node-idle: rgba(40,55,85,.85);
+    --node-active-brd: #5aa4ff;
+    --node-active-bg: rgba(90,164,255,.12);
+    --node-active-shadow: 0 0 24px rgba(90,164,255,.45);
+
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg-0); color: var(--txt); font-family: var(--sans); overflow: hidden; }
+
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at 20% 10%, rgba(60,120,220,.10), transparent 60%),
+      radial-gradient(ellipse at 80% 90%, rgba(180,60,200,.07), transparent 60%),
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 48px 48px,
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 48px 48px,
+      var(--bg-0);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  header {
+    position: relative; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px;
+    backdrop-filter: blur(12px);
+    background: linear-gradient(180deg, rgba(10,15,26,.85), rgba(10,15,26,.4));
+    border-bottom: 1px solid var(--glass-brd);
+  }
+  header h1 {
+    font-size: 14px; font-weight: 600; margin: 0; letter-spacing: .02em;
+    display: flex; align-items: center; gap: 10px;
+  }
+  header h1::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: #25d366; box-shadow: 0 0 10px #25d366;
+    animation: pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+  .ctrls { display: flex; gap: 10px; align-items: center; }
+  /* Speed slider lives left of the Auto-play button. The slider's
+     value drives the autoplay step interval inversely - higher value
+     on the slider = faster autoplay. */
+  .speed-control {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 10px;
+    background: var(--glass);
+    border: 1px solid var(--glass-brd);
+    border-radius: 8px;
+  }
+  .speed-control label {
+    font: 10px var(--mono); color: var(--txt-dim);
+    letter-spacing: .06em; text-transform: uppercase;
+    user-select: none;
+  }
+  .speed-control input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    width: 100px; height: 4px;
+    background: rgba(120,180,255,.2);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  .speed-control input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 12px; height: 12px;
+    background: var(--edge-active);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(90,164,255,.55);
+  }
+  .speed-control input[type="range"]::-moz-range-thumb {
+    width: 12px; height: 12px;
+    background: var(--edge-active);
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 0 8px rgba(90,164,255,.55);
+  }
+  .speed-control .speed-value {
+    font: 10px var(--mono); color: var(--txt);
+    min-width: 32px; text-align: right;
+  }
+  button {
+    background: var(--glass); color: var(--txt);
+    border: 1px solid var(--glass-brd); border-radius: 8px;
+    padding: 6px 14px; font: 12px var(--mono);
+    cursor: pointer; transition: all .15s;
+  }
+  button:hover { border-color: var(--edge-active); color: #fff; box-shadow: 0 0 12px rgba(90,164,255,.25); }
+  button:disabled { opacity: .35; cursor: not-allowed; }
+  button.primary { background: var(--edge-active); color: #051021; border-color: var(--edge-active); font-weight: 600; }
+  button.primary:hover { background: #76b3ff; }
+
+  main {
+    position: relative; z-index: 1;
+    display: grid; grid-template-columns: 1fr 320px;
+    height: calc(100vh - 48px);
+  }
+
+  #stage { position: relative; overflow: hidden; }
+  svg.topology { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  aside {
+    border-left: 1px solid var(--glass-brd);
+    background: linear-gradient(180deg, rgba(10,15,26,.9), rgba(5,8,15,.85));
+    backdrop-filter: blur(10px);
+    padding: 16px 18px;
+    display: grid;
+    grid-template-rows: 3fr 2fr;
+    gap: 12px;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .panel {
+    background: var(--glass);
+    border: 1px solid var(--glass-brd);
+    border-radius: 10px;
+    padding: 14px;
+  }
+  .panel h2 {
+    font-size: 10px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--txt-dim); margin: 0 0 10px 0;
+  }
+
+  #stepBox {
+    min-height: 0;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  #stepBox .step-counter,
+  #stepBox .step-title,
+  #stepBox #stepNav,
+  #stepBox .progress {
+    flex: 0 0 auto;
+  }
+  .step-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .step-scroll::-webkit-scrollbar { width: 6px; }
+  .step-scroll::-webkit-scrollbar-track { background: transparent; }
+  .step-scroll::-webkit-scrollbar-thumb { background: rgba(120,180,255,.25); border-radius: 3px; }
+  .step-counter {
+    font: 11px var(--mono); color: var(--txt-mute);
+    margin-bottom: 6px; letter-spacing: .06em;
+  }
+  .step-title {
+    font-size: 18px; font-weight: 700; line-height: 1.25; margin-bottom: 10px;
+    color: #fff;
+  }
+  .step-body {
+    font-size: 13px; line-height: 1.55; color: var(--txt);
+  }
+  .step-body .hl { color: #7ab8ff; font-weight: 600; }
+  .step-body code {
+    background: rgba(90,164,255,.12); padding: 1px 6px; border-radius: 4px;
+    font: 11.5px var(--mono); color: #aee0ff;
+  }
+  .step-meta {
+    margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid var(--glass-brd);
+    font: 11px var(--mono); color: var(--txt-dim);
+    line-height: 1.5;
+  }
+  .step-meta .k { color: var(--txt-mute); }
+  .step-meta .v { color: var(--txt); }
+
+  #stepNav {
+    display: flex; gap: 8px; align-items: center; justify-content: center;
+    margin-top: 10px;
+  }
+  #stepNav button {
+    flex: 1 1 auto;
+    padding: 8px 0;
+    font-size: 14px;
+    line-height: 1;
+    min-width: 0;
+  }
+  .progress {
+    height: 3px; background: rgba(90,164,255,.12); border-radius: 2px;
+    overflow: hidden; margin-top: 8px;
+  }
+  .progress-inner {
+    height: 100%; background: linear-gradient(90deg, var(--edge-active), #76b3ff);
+    width: 0; transition: width .35s;
+  }
+
+  #allStepsPanel {
+    min-height: 0;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .steps-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    margin-top: 2px;
+  }
+  .steps-list::-webkit-scrollbar { width: 6px; }
+  .steps-list::-webkit-scrollbar-track { background: transparent; }
+  .steps-list::-webkit-scrollbar-thumb { background: rgba(120,180,255,.25); border-radius: 3px; }
+  .step-row {
+    display: flex; align-items: start; gap: 8px;
+    padding: 6px 8px; border-radius: 6px;
+    font-size: 11.5px; line-height: 1.4;
+    color: var(--txt-dim); cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .step-row:hover { background: rgba(90,164,255,.08); color: var(--txt); }
+  .step-row.done { color: var(--txt-mute); }
+  .step-row.done .step-row-num { background: rgba(120,180,255,.1); color: var(--txt-mute); }
+  .step-row.active {
+    background: rgba(90,164,255,.14); color: #fff;
+  }
+  .step-row.active .step-row-num { background: var(--edge-active); color: #051021; }
+  .step-row-num {
+    flex: 0 0 22px; height: 22px; border-radius: 4px;
+    background: rgba(120,180,255,.1); color: var(--txt-dim);
+    font: 600 10px var(--mono); text-align: center; line-height: 22px;
+  }
+
+  /* Nodes - vertical layout: icon on top, text below. */
+  #nodeLayer {
+    position: absolute; inset: 0; pointer-events: none;
+  }
+  .node-box {
+    position: absolute; pointer-events: auto;
+    background: var(--node-idle);
+    border: 1px solid rgba(120,180,255,.18);
+    border-radius: 10px;
+    padding: 10px 8px;
+    backdrop-filter: blur(8px);
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    text-align: center;
+    transition: border-color .35s, background .35s, box-shadow .35s, transform .35s;
+  }
+  .node-box.active {
+    border-color: var(--node-active-brd);
+    background: var(--node-active-bg);
+    box-shadow: var(--node-active-shadow);
+    transform: translate(-50%, -50%) scale(1.04);
+  }
+  .node-box.dim { opacity: .25; }
+  .node-icon { flex: 0 0 32px; height: 32px; display: flex; align-items: center; justify-content: center; }
+  .node-icon svg { width: 32px; height: 32px; }
+  .node-text { line-height: 1.25; width: 100%; }
+  .node-title { font-size: 11px; font-weight: 600; color: #fff; letter-spacing: .01em; }
+  .node-sub { font-size: 9px; color: var(--txt-dim); font-family: var(--mono); margin-top: 1px; }
+  .node-sub b { color: #7ab8ff; font-weight: 500; }
+
+  /* Clusters (pure SVG background regions) */
+  .cluster-label {
+    font: 600 11px var(--sans);
+    fill: rgba(180,210,255,.55);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  /* Edges. Idle "base" lines are colored by traffic kind at low opacity
+     so the topology is readable when nothing animates. The solid-vs-dashed
+     distinction (set per edge in JS) encodes the two-plane model:
+     SOLID = signaling/control/tool, DASHED = DTLS/SRTP media via TURN. */
+  .edge-base {
+    fill: none; stroke-width: 1.4;
+    opacity: .12;  /* faint at rest so the active step's hot edges dominate */
+    transition: opacity .35s, stroke-width .35s;
+  }
+  .edge-base.live { opacity: 0; }  /* hidden when the hot version is pulsing */
+  .edge-hot {
+    stroke-width: 2.4; fill: none;
+    opacity: 0;
+    transition: opacity .35s;
+  }
+  .edge-hot.on {
+    opacity: .95;
+    filter: drop-shadow(0 0 6px currentColor);
+  }
+
+  /* Packets (animated dots) */
+  .packet { filter: drop-shadow(0 0 8px currentColor); }
+
+  /* Tooltips for nodes */
+  .node-tooltip {
+    position: absolute;
+    background: rgba(15,25,45,.96);
+    border: 1px solid rgba(120,180,255,.3);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font: 11.5px var(--sans); color: var(--txt);
+    max-width: 240px; pointer-events: none;
+    opacity: 0; transform: translateY(4px);
+    transition: opacity .15s, transform .15s;
+    z-index: 20;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  }
+  .node-tooltip.show { opacity: 1; transform: translateY(0); }
+  .node-tooltip .tooltip-title { font-weight: 700; color: #fff; margin-bottom: 3px; }
+
+  /* Edge-kind legend overlay (bottom-left of the stage). Polished
+     further in task 0.3, but present here so the two-plane reading is
+     clear from the start. */
+  .legend {
+    position: absolute; left: 14px; bottom: 14px; z-index: 8;
+    background: rgba(10,16,28,.82);
+    border: 1px solid var(--glass-brd);
+    border-radius: 10px;
+    padding: 10px 12px;
+    backdrop-filter: blur(8px);
+    max-width: 270px;
+    pointer-events: none;
+  }
+  .legend h3 {
+    margin: 0 0 8px 0; font: 700 9px var(--mono);
+    letter-spacing: .12em; text-transform: uppercase; color: var(--txt-dim);
+  }
+  .legend-row {
+    display: flex; align-items: center; gap: 8px;
+    font: 10px var(--mono); color: var(--txt); margin: 3px 0;
+  }
+  .legend-swatch { flex: 0 0 26px; height: 0; border-top-width: 2.5px; border-top-style: solid; }
+  .legend-note {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--glass-brd);
+    font: 9.5px var(--mono); color: var(--txt-dim); line-height: 1.5;
+  }
+  .legend-note b { color: #7ab8ff; font-weight: 600; }
+
+  /* Deployment-posture overlay (bottom-right of the stage). Always
+     visible, not tied to any step. It states the security/deployment
+     posture in plain terms so the "anyone can deploy, no certificates"
+     story reads at a glance. Anchored bottom-right so it never overlaps
+     the bottom-left edge legend or the step controls in the right aside.
+     Pure presentation: pointer-events:none. ASCII-only text. */
+  .posture {
+    position: absolute; right: 14px; bottom: 14px; z-index: 8;
+    background: rgba(10,16,28,.82);
+    border: 1px solid var(--glass-brd);
+    border-radius: 10px;
+    padding: 10px 12px;
+    backdrop-filter: blur(8px);
+    max-width: 300px;
+    pointer-events: none;
+  }
+  .posture h3 {
+    margin: 0 0 8px 0; font: 700 9px var(--mono);
+    letter-spacing: .12em; text-transform: uppercase; color: var(--txt-dim);
+  }
+  .posture-row {
+    display: flex; align-items: baseline; gap: 8px;
+    font: 10px var(--mono); color: var(--txt); margin: 4px 0; line-height: 1.45;
+  }
+  .posture-row .posture-key {
+    flex: 0 0 auto; color: #34d399; font-weight: 600;
+  }
+  .posture-row .posture-key.warn { color: #ff9f43; }
+  .posture-row .posture-val { color: var(--txt-dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>WhatsApp Restaurant AI Host - How It Works</h1>
+  <div class="ctrls">
+    <div class="speed-control" title="Auto-play speed">
+      <label for="speedSlider">Speed</label>
+      <input type="range" id="speedSlider" min="1" max="10" value="3" step="1" />
+      <span class="speed-value" id="speedValue">1.0x</span>
+    </div>
+    <button id="autoPlay">Auto-play</button>
+    <button id="restart">Restart</button>
+  </div>
+</header>
+
+<main>
+  <section id="stage">
+    <svg class="topology" id="svg" viewBox="0 0 1560 940" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="2.5" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="rgba(200,230,255,.75)" />
+        </marker>
+      </defs>
+      <g id="clusters"></g>
+      <g id="edgesBase"></g>
+      <g id="edgesHot"></g>
+      <g id="packets"></g>
+    </svg>
+    <div id="nodeLayer"></div>
+
+    <div class="legend" id="legend">
+      <h3>Edge legend</h3>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--sig);"></span> Signaling (HTTPS)</div>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--audio-in);"></span> Caller audio (up)</div>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--audio-out);"></span> Agent audio (down)</div>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--ctrl);"></span> Control / handshake</div>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--tool);"></span> MCP / REST tool</div>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--db);"></span> DynamoDB / state</div>
+      <div class="legend-row"><span class="legend-swatch" style="border-top-color: var(--mem);"></span> Shared memory read/write</div>
+      <div class="legend-note">
+        <b>Solid</b> = signaling plane (HTTPS).
+        <b>Dashed</b> = media plane (DTLS/SRTP via KVS TURN relay).
+      </div>
+    </div>
+
+    <div class="posture" id="posture">
+      <h3>Deployment posture</h3>
+      <div class="posture-row"><span class="posture-key">Only public endpoint</span><span class="posture-val">Webhook API Gateway (HTTPS, AWS-managed cert)</span></div>
+      <div class="posture-row"><span class="posture-key">Voice runtime</span><span class="posture-val">VPC-only, no public media listener</span></div>
+      <div class="posture-row"><span class="posture-key">Media</span><span class="posture-val">relayed via AWS-managed, IAM-authenticated KVS TURN</span></div>
+      <div class="posture-row"><span class="posture-key warn">Certificate-free</span><span class="posture-val">no custom domain, self-signed DTLS, IAM-issued TURN creds</span></div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="panel" id="stepBox">
+      <div class="step-counter" id="stepCounter">STEP 0 OF 0</div>
+      <div class="step-title" id="stepTitle">Welcome</div>
+      <div class="step-scroll">
+        <div class="step-body" id="stepBody">Choose <b>Next</b> to walk through what happens when a customer calls, texts, or sends a voice note to the restaurant on WhatsApp.</div>
+        <div class="step-meta" id="stepMeta"></div>
+      </div>
+      <div id="stepNav">
+        <button id="jumpStart" title="First step">|&lt;</button>
+        <button id="prevStep" title="Previous step">&lt;</button>
+        <button id="nextStep" class="primary" title="Next step">&gt;</button>
+        <button id="jumpEnd" title="Last step">&gt;|</button>
+      </div>
+      <div class="progress"><div class="progress-inner" id="progressInner"></div></div>
+    </div>
+
+    <div class="panel" id="allStepsPanel">
+      <h2>All Steps</h2>
+      <div class="steps-list" id="stepsList"></div>
+    </div>
+  </aside>
+</main>
+
+<div class="node-tooltip" id="tooltip"></div>
+
+<script>
+// ===================================================================
+// TOPOLOGY - WhatsApp Restaurant AI Host (WebRTC voice + text + voice notes)
+// Each node has: x, y (top-left), w, h, label, sub (monospace line), icon.
+// Left-to-right clusters mirror the design's two-plane model.
+// ===================================================================
+
+const NODES = {
+  // Tier 1 - Meta WhatsApp Business Platform
+  metaCalling:  { x:  20, y: 110, w: 150, h: 78, label: 'Calling API',     sub: 'voice call: SDP offer webhook', icon: 'whatsapp' },
+  metaCloud:    { x:  20, y: 300, w: 150, h: 78, label: 'Messages Webhook', sub: 'inbound text + voice-note events', icon: 'whatsapp' },
+  metaMedia:    { x:  20, y: 490, w: 150, h: 78, label: 'Media API',       sub: 'download voice note / image / file', icon: 'whatsapp' },
+  metaMessages: { x:  20, y: 680, w: 150, h: 78, label: 'Messages API',    sub: 'outbound replies + templates + calls', icon: 'whatsapp' },
+
+  // Tier 2 - Ingress + async processing (routing only; the agents are NOT here)
+  webhookGw:     { x: 205, y:  90, w: 160, h: 78, label: 'Webhook API GW',  sub: 'HTTPS - AWS-managed cert',      icon: 'apigw' },
+  webhookLambda: { x: 205, y: 280, w: 160, h: 82, label: 'Webhook Ingest',  sub: '<b>verify / sig / enqueue</b>', icon: 'lambda' },
+  inboundQueue:  { x: 205, y: 480, w: 160, h: 78, label: 'Inbound Queue',   sub: '<b>SQS</b> + dead-letter queue', icon: 'sqs' },
+  worker:        { x: 205, y: 670, w: 160, h: 82, label: 'Webhook Worker',  sub: '<b>dispatch / invoke / reply</b>', icon: 'lambda' },
+
+  // Tier 3 - Agent runtimes (data plane). All three agents live together.
+  chatRuntime:       { x: 405, y: 140, w: 175, h: 90, label: 'Chat Runtime',       sub: 'Converse + Nova Pro <b>(multimodal)</b>', icon: 'agentcore' },
+  voiceNotesRuntime: { x: 405, y: 360, w: 175, h: 90, label: 'VoiceNotes Runtime', sub: 'bounded Sonic <b>speech-to-speech</b>',   icon: 'agentcore' },
+  callRuntime:       { x: 405, y: 580, w: 175, h: 90, label: 'Call Runtime',       sub: 'aiortc + PyAV + Nova 2 Sonic',            icon: 'agentcore' },
+
+  // Tier 4 - Media relay (AWS-managed; not an agent, not signaling)
+  kvsTurn:     { x: 625, y: 580, w: 140, h: 90, label: 'KVS managed TURN', sub: '<b>relay + GetIceServerConfig</b>', icon: 'kvs' },
+
+  // Tier 5 - State, secrets & memory
+  winTable:     { x: 800, y: 110, w: 160, h: 78, label: 'Last Inbound table', sub: 'DynamoDB - customerId, lastInboundTs', icon: 'dynamodb' },
+  secrets:      { x: 800, y: 280, w: 160, h: 78, label: 'Secrets Manager',    sub: 'Token / Secret / Verify', icon: 'secrets' },
+  pepper:       { x: 800, y: 450, w: 160, h: 78, label: 'SSM Pepper',         sub: 'SecureString (SHARED)',   icon: 'ssm' },
+  sharedMemory: { x: 800, y: 640, w: 160, h: 92, label: 'AgentCore Memory',   sub: '<b>SHARED</b> key=customer_id', icon: 'memory' },
+
+  // Tier 6 - Shared backend (REUSED)
+  gateway:      { x: 1020, y: 120, w: 160, h: 78, label: 'AgentCore Gateway', sub: 'MCP tools',          icon: 'agentcore' },
+  restApi:      { x: 1020, y: 290, w: 160, h: 78, label: 'Backend REST API',  sub: 'API GW - AWS_IAM',   icon: 'apigw' },
+  orderLambdas: { x: 1000, y: 470, w: 160, h: 78, label: 'Ordering Lambdas',  sub: 'GetMenu, Cart, ...', icon: 'lambda' },
+  ddbTables:    { x: 1190, y: 470, w: 150, h: 78, label: 'DynamoDB',          sub: '5 tables',           icon: 'dynamodb' },
+  location:     { x: 1060, y: 650, w: 160, h: 78, label: 'Location Service',  sub: 'geocode / nearest',  icon: 'location' },
+};
+
+const CLUSTERS = [
+  { label: 'Meta WhatsApp Business Platform', x:  10, y: 60, w: 175, h: 820, color: '#25d366' },
+  { label: 'Ingress + async processing',      x: 195, y: 60, w: 185, h: 820, color: '#ff9f43' },
+  { label: 'Agent runtimes (data plane)',     x: 390, y: 60, w: 210, h: 820, color: '#5aa4ff' },
+  { label: 'Media relay',                     x: 610, y: 60, w: 170, h: 820, color: '#d946ef' },
+  { label: 'State + secrets + memory',        x: 790, y: 60, w: 190, h: 820, color: '#a78bfa' },
+  { label: 'Shared backend (reused)',         x: 990, y: 60, w: 560, h: 820, color: '#34d399' },
+];
+
+// All edges in the system. Each step activates a subset.
+// kind drives packet color; `dashed:true` marks the MEDIA plane
+// (DTLS/SRTP relayed through KVS TURN) so it renders DASHED while every
+// signaling/control/tool edge renders SOLID. This is the two-plane model.
+const EDGES = [
+  // ---- SIGNALING PLANE (HTTPS / control) - SOLID ----
+  { id: 'calling-gw',     from: 'metaCalling',   to: 'webhookGw',     curve:   0, color: 'var(--sig)',  kind: 'sig' },
+  { id: 'cloud-gw',       from: 'metaCloud',     to: 'webhookGw',     curve:  40, color: 'var(--sig)',  kind: 'sig' },
+  { id: 'gw-lambda',      from: 'webhookGw',     to: 'webhookLambda', curve:   0, color: 'var(--sig)',  kind: 'sig' },
+  // ASYNC SPINE (R2.5): ingest enqueues to SQS and returns 200 within 5 s; the
+  // worker consumes the queue and does the slow per-message work off the request
+  // path. messages + voice notes ride this spine.
+  { id: 'lambda-queue',   from: 'webhookLambda', to: 'inboundQueue',  curve:   0, color: 'var(--sig)',  kind: 'sig' },
+  { id: 'queue-worker',   from: 'inboundQueue',  to: 'worker',        curve:   0, color: 'var(--ctrl)', kind: 'ctrl' },
+  // voice-call signaling proxy lives in the WORKER (Task 17): the SDP answer is
+  // delivered via a separate POST /calls (pre_accept/accept), so calls ride the
+  // SAME queue as messages and are handled fully async off the request path.
+  { id: 'lambda-call',    from: 'worker',        to: 'callRuntime',   curve:   0, color: 'var(--sig)',  kind: 'sig' },
+  { id: 'call-lambda',    from: 'callRuntime',   to: 'worker',        curve:  60, color: 'var(--ctrl)', kind: 'ctrl' },
+  // text (multimodal) path: the WORKER invokes the Chat Runtime
+  { id: 'lambda-chat',    from: 'worker',        to: 'chatRuntime',   curve:   0, color: 'var(--sig)',  kind: 'sig' },
+  // voice-note (speech-to-speech) path: the WORKER invokes the VoiceNotes Runtime + audio reply back
+  { id: 'lambda-vn',      from: 'worker',        to: 'voiceNotesRuntime', curve: 40, color: 'var(--sig)',  kind: 'sig' },
+  { id: 'vn-lambda',      from: 'voiceNotesRuntime', to: 'worker',        curve: -40, color: 'var(--sig)', kind: 'sig' },
+  // reply send (text + audio): the WORKER sends via the Messages API
+  { id: 'lambda-messages',from: 'worker',        to: 'metaMessages',  curve: 110, color: 'var(--sig)',  kind: 'sig' },
+  // media fetch (HTTPS): the WORKER downloads image/document/voice-note bytes
+  { id: 'lambda-media',   from: 'worker',        to: 'metaMedia',     curve: -40, color: 'var(--sig)',  kind: 'sig' },
+  { id: 'media-lambda',   from: 'metaMedia',     to: 'worker',        curve:  60, color: 'var(--sig)',  kind: 'sig' },
+  // ICE config (signaling-time, control) - SOLID. KVS as a credential source only.
+  { id: 'call-ice',       from: 'callRuntime',   to: 'kvsTurn',       curve: 120, color: 'var(--ctrl)', kind: 'ctrl' },
+
+  // ---- MEDIA PLANE (DTLS/SRTP via TURN) - DASHED ----
+  { id: 'calling-turn-up',  from: 'metaCalling', to: 'kvsTurn',     curve:  -70, color: 'var(--audio-in)',  kind: 'audioIn',  dashed: true },
+  { id: 'turn-call-up',     from: 'kvsTurn',     to: 'callRuntime', curve:  -40, color: 'var(--audio-in)',  kind: 'audioIn',  dashed: true },
+  { id: 'call-turn-down',   from: 'callRuntime', to: 'kvsTurn',     curve:   60, color: 'var(--audio-out)', kind: 'audioOut', dashed: true },
+  { id: 'turn-calling-down',from: 'kvsTurn',     to: 'metaCalling', curve: -110, color: 'var(--audio-out)', kind: 'audioOut', dashed: true },
+
+  // ---- STATE + SECRETS (control/db) - SOLID ----
+  // The INGEST reads only Verify_Token + App_Secret (to verify + signature-gate).
+  { id: 'lambda-secret', from: 'webhookLambda', to: 'secrets',  curve: -40,  color: 'var(--db)', kind: 'db' },
+  // The WORKER reads the Access_Token (Media + Messages API), reads/writes the
+  // 24-hour window, and reads the shared Pepper to derive the Customer_Id.
+  { id: 'worker-secret', from: 'worker',        to: 'secrets',  curve:  20,  color: 'var(--db)', kind: 'db' },
+  { id: 'lambda-window', from: 'worker',        to: 'winTable', curve: -120, color: 'var(--db)', kind: 'db' },
+  { id: 'lambda-pepper', from: 'worker',        to: 'pepper',   curve:  40,  color: 'var(--db)', kind: 'db' },
+
+  // ---- SHARED MEMORY (read long-term at start / write events at end) - SOLID ----
+  // All three runtimes read/write the one shared AgentCore Memory keyed by customer_id.
+  { id: 'chat-mem', from: 'chatRuntime',       to: 'sharedMemory', curve: 120, color: 'var(--mem)', kind: 'mem' },
+  { id: 'vn-mem',   from: 'voiceNotesRuntime', to: 'sharedMemory', curve:  90, color: 'var(--mem)', kind: 'mem' },
+  { id: 'call-mem', from: 'callRuntime',       to: 'sharedMemory', curve: 110, color: 'var(--mem)', kind: 'mem' },
+
+  // ---- SHARED BACKEND (tool/db) - SOLID ----
+  { id: 'call-gw',      from: 'callRuntime',       to: 'gateway',      curve: -90,  color: 'var(--tool)', kind: 'tool' },
+  { id: 'chat-gw',      from: 'chatRuntime',       to: 'gateway',      curve: -150, color: 'var(--tool)', kind: 'tool' },
+  { id: 'vn-gw',        from: 'voiceNotesRuntime', to: 'gateway',      curve: -180, color: 'var(--tool)', kind: 'tool' },
+  { id: 'gw-rest',      from: 'gateway',           to: 'restApi',      curve:   0,  color: 'var(--tool)', kind: 'tool' },
+  { id: 'rest-lambdas', from: 'restApi',           to: 'orderLambdas', curve:   0,  color: 'var(--tool)', kind: 'tool' },
+  { id: 'lambdas-ddb',  from: 'orderLambdas',      to: 'ddbTables',    curve:   0,  color: 'var(--db)',   kind: 'db' },
+  { id: 'lambdas-loc',  from: 'orderLambdas',      to: 'location',     curve:  40,  color: 'var(--db)',   kind: 'db' },
+];
+
+// ===================================================================
+// THE TUTORIAL SCRIPT (task 0.2) - full three-channel narration.
+// Ordered walkthrough: orientation + shared memory, then the VOICE CALL
+// (WebRTC), TEXT (multimodal), and VOICE NOTE (speech-to-speech) flows.
+// Every `nodes`/`edges`/`packets` entry references an id defined above.
+// ASCII-only in all rendered text (use -> for arrows).
+// ===================================================================
+
+const STEPS = [
+  {
+    title: 'Three channels, one WhatsApp number',
+    body: 'A customer can <span class="hl">call</span>, <span class="hl">text</span>, or send a <span class="hl">voice note</span> to the restaurant on WhatsApp. Meta operates the front door; AWS hosts the brains. Inbound traffic lands on the <span class="hl">Webhook Ingest</span> Lambda, which verifies the request, then <b>enqueues messages to an SQS queue and returns 200 within 5 seconds</b>; a separate <span class="hl">Webhook Worker</span> pulls from the queue and does the slow work (this is the async split that keeps Meta from re-delivering). The single most important rule of this diagram: <b>signaling and media travel on two separate planes</b> - solid lines are HTTPS signaling, dashed lines are DTLS/SRTP media relayed through the KVS managed TURN relay.',
+    meta: { Channels: 'voice call / text / voice note', Async: 'ingest -> SQS -> worker (fast 200, R2.5)', Planes: 'signaling (solid) vs media (dashed)' },
+    nodes: ['metaCalling', 'metaCloud', 'webhookGw', 'webhookLambda', 'inboundQueue', 'worker', 'callRuntime', 'chatRuntime', 'voiceNotesRuntime'],
+    edges: [
+      { edge: 'calling-gw', kind: 'sig' },
+      { edge: 'cloud-gw', kind: 'sig' },
+      { edge: 'gw-lambda', kind: 'sig' },
+      { edge: 'lambda-queue', kind: 'sig' },
+      { edge: 'queue-worker', kind: 'ctrl' },
+      { edge: 'lambda-chat', kind: 'sig' },
+      { edge: 'lambda-vn', kind: 'sig' },
+      { edge: 'lambda-call', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'calling-gw', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'cloud-gw', kind: 'sig', count: 1, delay: 150 },
+      { edge: 'gw-lambda', kind: 'sig', count: 1, delay: 450 },
+      { edge: 'lambda-queue', kind: 'sig', count: 1, delay: 800 },
+      { edge: 'queue-worker', kind: 'ctrl', count: 1, delay: 1050 },
+      { edge: 'lambda-chat', kind: 'sig', count: 1, delay: 1350 },
+      { edge: 'lambda-vn', kind: 'sig', count: 1, delay: 1500 },
+      { edge: 'lambda-call', kind: 'sig', count: 1, delay: 1650 },
+    ],
+  },
+  {
+    title: 'Shared memory makes one customer across all channels',
+    body: 'Every sender is reduced to a pseudonymous <code>customer_id</code> = <code>"wa-" + sha256(E164 || Pepper)[:16]</code>. All three runtimes <b>read and write one shared AgentCore Memory</b> keyed by that id. At session start a runtime reads the <span class="hl">long-term consolidated insights</span> (name, preferences, dietary notes, usual order); at session end it writes the raw conversation events. Long-term insights are the cross-channel recall mechanism: a customer who texts today and calls tomorrow is the <b>same person</b> to the agent. Short-term events expire after 30 days; the raw phone number is never stored.',
+    meta: { Key: 'customer_id (pseudonymous)', Read: 'long-term insights at start', Write: 'raw events at end', Recall: 'long-term = cross-channel continuity' },
+    nodes: ['chatRuntime', 'voiceNotesRuntime', 'callRuntime', 'sharedMemory'],
+    edges: [
+      { edge: 'chat-mem', kind: 'mem' },
+      { edge: 'vn-mem', kind: 'mem' },
+      { edge: 'call-mem', kind: 'mem' },
+    ],
+    packets: [
+      { edge: 'chat-mem', kind: 'mem', count: 1, delay: 0 },
+      { edge: 'vn-mem', kind: 'mem', count: 1, delay: 250 },
+      { edge: 'call-mem', kind: 'mem', count: 1, delay: 500 },
+    ],
+  },
+
+  // ---------------- VOICE CALL (WebRTC) ----------------
+  {
+    title: 'Voice call: customer taps Call - ingest verifies and enqueues',
+    body: 'The WhatsApp user taps Call. Meta\'s <span class="hl">Calling API</span> delivers a <code>calls</code> webhook (<code>event=connect</code>) carrying the <span class="hl">WebRTC SDP offer</span> over HTTPS to the API Gateway and into the <span class="hl">Webhook Ingest</span>. The ingest does the same narrow job as for messages: <b>signature-gate, then enqueue the calls event and return 200</b>. It does NOT relay the offer itself - that is the worker\'s job. (The SDP answer is delivered later via a separate POST /calls, so calls do not need a synchronous response and can ride the queue.)',
+    meta: { Webhook: 'calls event=connect', Ingest: 'verify -> enqueue -> 200', Why_async: 'answer is sent via POST /calls, not the webhook response' },
+    nodes: ['metaCalling', 'webhookGw', 'webhookLambda', 'secrets', 'inboundQueue'],
+    edges: [
+      { edge: 'calling-gw', kind: 'sig' },
+      { edge: 'gw-lambda', kind: 'sig' },
+      { edge: 'lambda-secret', kind: 'db' },
+      { edge: 'lambda-queue', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'calling-gw', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'gw-lambda', kind: 'sig', count: 1, delay: 300 },
+      { edge: 'lambda-secret', kind: 'db', count: 1, delay: 600 },
+      { edge: 'lambda-queue', kind: 'sig', count: 1, delay: 800 },
+    ],
+  },
+  {
+    title: 'Voice call: worker pulls the calls event and relays the offer',
+    body: 'The <span class="hl">Webhook Worker</span> consumes the calls event from the queue and acts as the <span class="hl">signaling proxy</span>: it relays the offer to the WhatsApp Call Runtime over the AgentCore invoke API: <code>{action:"offer", data:{sdp, turnOnly:true}}</code>. Meta never speaks to KVS or AgentCore directly. <code>turnOnly</code> forces relay candidates because the runtime has no public IP.',
+    meta: { Pull: 'SQS -> worker', Invoke: 'POST /invocations action=offer', turnOnly: 'true (relay only, no public IP)' },
+    nodes: ['inboundQueue', 'worker', 'callRuntime'],
+    edges: [
+      { edge: 'queue-worker', kind: 'ctrl' },
+      { edge: 'lambda-call', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'queue-worker', kind: 'ctrl', count: 1, delay: 0 },
+      { edge: 'lambda-call', kind: 'sig', count: 1, delay: 350 },
+    ],
+  },
+  {
+    title: 'Voice call: Call Runtime reads memory and fetches TURN credentials',
+    body: 'At session start the Call Runtime <b>reads the shared memory</b> long-term insights for this <code>customer_id</code>, so Nova 2 Sonic can greet the caller by name and recall their usual order. In parallel it calls KVS <code>GetIceServerConfig</code> for <span class="hl">TURN credentials</span> - the one place KVS appears on the signaling plane, purely as a credential source.',
+    meta: { Memory: 'read long-term insights at start', Creds: 'GetIceServerConfig (Service=TURN)', Note: 'KVS = credential source here, not a broker' },
+    nodes: ['callRuntime', 'sharedMemory', 'kvsTurn'],
+    edges: [
+      { edge: 'call-mem', kind: 'mem' },
+      { edge: 'call-ice', kind: 'ctrl' },
+    ],
+    packets: [
+      { edge: 'call-mem', kind: 'mem', count: 1, delay: 0 },
+      { edge: 'call-ice', kind: 'ctrl', count: 1, delay: 350 },
+    ],
+  },
+  {
+    title: 'Voice call: single-shot SDP answer (THE KEY ADAPTATION)',
+    body: 'The sample uses trickle ICE, but <b>Meta provides no trickle path</b>. So the <code>aiortc</code> answerer <b>waits for <code>iceGatheringState == "complete"</code></b> and returns a <span class="hl">single-shot SDP answer</span> with the relay ICE candidates already embedded. The answer goes back to the <span class="hl">worker</span>, which returns it to Meta via <code>pre_accept</code> then <code>accept</code> (pre_accept buys time within the call window and avoids first-word clipping). This seconds-long ICE wait is exactly why calls run in the worker, not on the API Gateway request path. This is the highest-risk adaptation in the design.',
+    meta: { Adaptation: 'single-shot answer, embedded ICE', Wait: 'iceGatheringState == complete', Return: 'worker -> Messages API pre_accept -> accept', Note: 'KEY ADAPTATION POINT' },
+    nodes: ['callRuntime', 'worker', 'metaMessages'],
+    edges: [
+      { edge: 'call-lambda', kind: 'ctrl' },
+      { edge: 'lambda-messages', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'call-lambda', kind: 'ctrl', count: 1, delay: 0 },
+      { edge: 'lambda-messages', kind: 'sig', count: 1, delay: 450 },
+    ],
+  },
+  {
+    title: 'Voice call: media flows DTLS/SRTP through the KVS TURN relay (dashed)',
+    body: 'After <code>accept</code>, audio flows on the <b>media plane</b> (dashed): caller voice goes Meta -&gt; <span class="hl">KVS TURN relay</span> -&gt; Call Runtime; the agent\'s spoken reply goes back the other way. Because the runtime container has no public IP (VPC mode, outbound UDP only), every media packet must traverse the relay. <span class="hl">PyAV</span> resamples inbound audio to 16 kHz PCM for <span class="hl">Nova 2 Sonic</span>.',
+    meta: { Media: 'DTLS/SRTP (Opus, G.711 fallback)', Relay: 'KVS managed TURN', Transcode: 'PyAV -> 16 kHz PCM' },
+    nodes: ['metaCalling', 'kvsTurn', 'callRuntime'],
+    edges: [
+      { edge: 'calling-turn-up', kind: 'audioIn' },
+      { edge: 'turn-call-up', kind: 'audioIn' },
+      { edge: 'call-turn-down', kind: 'audioOut' },
+      { edge: 'turn-calling-down', kind: 'audioOut' },
+    ],
+    packets: [
+      { edge: 'calling-turn-up', kind: 'audioIn', count: 3, delay: 0, spread: 1500 },
+      { edge: 'turn-call-up', kind: 'audioIn', count: 3, delay: 150, spread: 1500 },
+      { edge: 'call-turn-down', kind: 'audioOut', count: 3, delay: 600, spread: 1500 },
+      { edge: 'turn-calling-down', kind: 'audioOut', count: 3, delay: 750, spread: 1500 },
+    ],
+  },
+  {
+    title: 'Voice call: tool calls reach the shared backend',
+    body: 'When Nova 2 Sonic needs live data (menu, cart, place order, nearest location) it emits a <code>tool_use</code> that the runtime routes through the <span class="hl">AgentCore Gateway</span> (MCP tools) -&gt; <span class="hl">backend REST API</span> -&gt; <span class="hl">ordering Lambdas</span> -&gt; <span class="hl">DynamoDB</span> / Location Service. The spoken response then travels back down the media path to the caller. The backend is reused unchanged from the telephony variant.',
+    meta: { Path: 'tool_use -> MCP -> REST -> Lambda -> DynamoDB', Order: 'PlaceOrder channel="whatsapp", customerId=<id>', Shared: 'reused by all three runtimes' },
+    nodes: ['callRuntime', 'gateway', 'restApi', 'orderLambdas', 'ddbTables', 'location'],
+    edges: [
+      { edge: 'call-gw', kind: 'tool' },
+      { edge: 'gw-rest', kind: 'tool' },
+      { edge: 'rest-lambdas', kind: 'tool' },
+      { edge: 'lambdas-ddb', kind: 'db' },
+      { edge: 'lambdas-loc', kind: 'db' },
+    ],
+    packets: [
+      { edge: 'call-gw', kind: 'tool', count: 1, delay: 0 },
+      { edge: 'gw-rest', kind: 'tool', count: 1, delay: 300 },
+      { edge: 'rest-lambdas', kind: 'tool', count: 1, delay: 600 },
+      { edge: 'lambdas-ddb', kind: 'db', count: 1, delay: 900 },
+      { edge: 'lambdas-loc', kind: 'db', count: 1, delay: 900 },
+    ],
+  },
+  {
+    title: 'Voice call: write memory, then Meta terminate and teardown',
+    body: 'When the call ends, Meta delivers a <code>calls</code> <span class="hl">terminate</span> webhook. The <span class="hl">ingest</span> verifies and enqueues it; the <span class="hl">worker</span> consumes it and invokes the Call Runtime <code>disconnect</code> action over the AgentCore invoke API. The Call Runtime <b>writes the conversation events to shared memory</b> (later consolidated into long-term insights for future channels), then tears down the peer connection and the Nova 2 Sonic session.',
+    meta: { Webhook: 'calls terminate', Path: 'ingest -> queue -> worker -> Call Runtime disconnect', Memory: 'write events at session end', Teardown: 'close RTCPeerConnection + Sonic stream' },
+    nodes: ['metaCalling', 'webhookGw', 'webhookLambda', 'inboundQueue', 'worker', 'callRuntime', 'sharedMemory'],
+    edges: [
+      { edge: 'calling-gw', kind: 'sig' },
+      { edge: 'gw-lambda', kind: 'sig' },
+      { edge: 'lambda-queue', kind: 'sig' },
+      { edge: 'queue-worker', kind: 'ctrl' },
+      { edge: 'lambda-call', kind: 'sig' },
+      { edge: 'call-mem', kind: 'mem' },
+    ],
+    packets: [
+      { edge: 'calling-gw', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'gw-lambda', kind: 'sig', count: 1, delay: 250 },
+      { edge: 'lambda-queue', kind: 'sig', count: 1, delay: 500 },
+      { edge: 'queue-worker', kind: 'ctrl', count: 1, delay: 750 },
+      { edge: 'lambda-call', kind: 'sig', count: 1, delay: 1000 },
+      { edge: 'call-mem', kind: 'mem', count: 1, delay: 1300 },
+    ],
+  },
+
+  // ---------------- TEXT (multimodal) ----------------
+  {
+    title: 'Text: message webhook arrives -> verify, enqueue, fast 200',
+    body: 'For a text conversation, Meta delivers a <span class="hl">message webhook</span> POST to the API Gateway and into the <span class="hl">Webhook Ingest</span> Lambda. The message may carry plain <span class="hl">text</span>, an <span class="hl">image</span>, and/or a <span class="hl">document/file</span> - the modalities Nova Pro supports. The ingest runs the <span class="hl">signature gate</span> (App_Secret), then <b>enqueues the message to SQS and returns 200 immediately</b> - the slow work happens later in the worker, so Meta is acknowledged well within its 5-second window (R2.5).',
+    meta: { Webhook: 'inbound message POST', Gate: 'HMAC-SHA256 then enqueue', Ack: '200 within 5 s (R2.5)' },
+    nodes: ['metaCloud', 'webhookGw', 'webhookLambda', 'secrets', 'inboundQueue'],
+    edges: [
+      { edge: 'cloud-gw', kind: 'sig' },
+      { edge: 'gw-lambda', kind: 'sig' },
+      { edge: 'lambda-secret', kind: 'db' },
+      { edge: 'lambda-queue', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'cloud-gw', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'gw-lambda', kind: 'sig', count: 1, delay: 250 },
+      { edge: 'lambda-secret', kind: 'db', count: 1, delay: 550 },
+      { edge: 'lambda-queue', kind: 'sig', count: 1, delay: 750 },
+    ],
+  },
+  {
+    title: 'Text: worker pulls from the queue, derives Customer_Id, fetches attachments',
+    body: 'The <span class="hl">Webhook Worker</span> consumes the message from the SQS queue and does the real work. It derives the <code>customer_id</code> = <code>"wa-" + sha256(E164 || Pepper)[:16]</code> using the shared SSM Pepper, then, if the message has an image or document, fetches the bytes from Meta\'s <span class="hl">Media API</span> using the Access_Token (resolve <code>media_id</code> -&gt; download URL -&gt; bytes). Plain-text messages skip the download. The bytes become Converse content blocks alongside any text caption.',
+    meta: { Pull: 'SQS -> worker', Identity: 'customer_id from sha256(E164 || Pepper)', Fetch: 'media_id -> bytes (Access_Token)' },
+    nodes: ['inboundQueue', 'worker', 'pepper', 'metaMedia'],
+    edges: [
+      { edge: 'queue-worker', kind: 'ctrl' },
+      { edge: 'lambda-pepper', kind: 'db' },
+      { edge: 'lambda-media', kind: 'sig' },
+      { edge: 'media-lambda', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'queue-worker', kind: 'ctrl', count: 1, delay: 0 },
+      { edge: 'lambda-pepper', kind: 'db', count: 1, delay: 300 },
+      { edge: 'lambda-media', kind: 'sig', count: 1, delay: 600 },
+      { edge: 'media-lambda', kind: 'sig', count: 1, delay: 1000 },
+    ],
+  },
+  {
+    title: 'Text: invoke the multimodal Chat Runtime (Converse + Nova Pro)',
+    body: 'The <span class="hl">worker</span> invokes the <span class="hl">WhatsApp Chat Runtime</span> with <code>session_id = customer_id</code>, passing text + image + file <span class="hl">content blocks</span>. The runtime <b>reads the shared memory</b> long-term insights at start, then drives Amazon Nova Pro through the Bedrock <span class="hl">Converse API</span>. Tool needs (menu, cart, order, locations) go gateway-only via MCP - never a direct backend call. Unsupported attachment types get a polite resend request while the rest of the message still processes.',
+    meta: { Invoke: 'session_id = customer_id', Model: 'Nova Pro via Converse', Memory: 'read long-term insights at start', Tools: 'MCP via AgentCore Gateway (gateway-only)' },
+    nodes: ['worker', 'chatRuntime', 'sharedMemory', 'gateway', 'restApi', 'orderLambdas', 'ddbTables'],
+    edges: [
+      { edge: 'lambda-chat', kind: 'sig' },
+      { edge: 'chat-mem', kind: 'mem' },
+      { edge: 'chat-gw', kind: 'tool' },
+      { edge: 'gw-rest', kind: 'tool' },
+      { edge: 'rest-lambdas', kind: 'tool' },
+      { edge: 'lambdas-ddb', kind: 'db' },
+    ],
+    packets: [
+      { edge: 'lambda-chat', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'chat-mem', kind: 'mem', count: 1, delay: 300 },
+      { edge: 'chat-gw', kind: 'tool', count: 1, delay: 600 },
+      { edge: 'gw-rest', kind: 'tool', count: 1, delay: 900 },
+      { edge: 'rest-lambdas', kind: 'tool', count: 1, delay: 1150 },
+      { edge: 'lambdas-ddb', kind: 'db', count: 1, delay: 1400 },
+    ],
+  },
+  {
+    title: 'Text: reply via Messages API, then write memory',
+    body: 'The Chat Runtime answers in text. The <span class="hl">worker</span> sends the reply via the WhatsApp <span class="hl">Messages API</span>, routing by the <span class="hl">24-hour window</span> rule (free-form if the customer messaged within the last 24h, otherwise an approved Utility template) and updating <code>lastInboundTs</code> in the Last Inbound table. At session end the runtime <b>writes the conversation events to shared memory</b>.',
+    meta: { Reply: 'Messages API (text)', Routing: '24h window: free-form vs Utility template', Memory: 'write events at end' },
+    nodes: ['chatRuntime', 'sharedMemory', 'worker', 'winTable', 'metaMessages'],
+    edges: [
+      { edge: 'chat-mem', kind: 'mem' },
+      { edge: 'lambda-window', kind: 'db' },
+      { edge: 'lambda-messages', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'chat-mem', kind: 'mem', count: 1, delay: 0 },
+      { edge: 'lambda-window', kind: 'db', count: 1, delay: 300 },
+      { edge: 'lambda-messages', kind: 'sig', count: 1, delay: 650 },
+    ],
+  },
+
+  // ---------------- VOICE NOTE (speech-to-speech, NO transcribe) ----------------
+  {
+    title: 'Voice note: audio webhook -> verify, enqueue, fast 200',
+    body: 'A voice note arrives on the webhook with <code>type: audio</code>. The <span class="hl">Webhook Ingest</span> runs the signature gate, then <b>enqueues the message to SQS and returns 200</b> - the same async spine as text. <b>There is no Amazon Transcribe anywhere</b> in this design; the actual audio handling is a true voice-in / voice-out path done by the worker next.',
+    meta: { Webhook: 'type: audio', Path: 'verify -> enqueue -> 200 (R2.5)', Note: 'NO transcription (speech-to-speech)' },
+    nodes: ['metaCloud', 'webhookGw', 'webhookLambda', 'inboundQueue'],
+    edges: [
+      { edge: 'cloud-gw', kind: 'sig' },
+      { edge: 'gw-lambda', kind: 'sig' },
+      { edge: 'lambda-queue', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'cloud-gw', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'gw-lambda', kind: 'sig', count: 1, delay: 250 },
+      { edge: 'lambda-queue', kind: 'sig', count: 1, delay: 550 },
+    ],
+  },
+  {
+    title: 'Voice note: worker pulls, downloads OGG, runs a bounded Sonic session',
+    body: 'The <span class="hl">Webhook Worker</span> consumes the message, derives the <code>customer_id</code> (shared Pepper), and downloads the <span class="hl">OGG Opus</span> bytes from the Media API. It invokes the <span class="hl">WhatsApp VoiceNotes Runtime</span> with the bytes and <code>session_id = customer_id</code>. The runtime <b>reads the shared memory</b> at start, <span class="hl">decodes OGG Opus to 16 kHz PCM</span>, and feeds a short, <b>bounded Nova 2 Sonic speech-to-speech session</b>. Tool needs go through the same AgentCore Gateway MCP tools as the other runtimes.',
+    meta: { Pull: 'SQS -> worker', Fetch: 'OGG Opus bytes (Media API)', Decode: 'OGG Opus -> 16 kHz PCM', Session: 'bounded Nova 2 Sonic speech-to-speech' },
+    nodes: ['inboundQueue', 'worker', 'pepper', 'metaMedia', 'voiceNotesRuntime', 'sharedMemory', 'gateway', 'restApi', 'orderLambdas'],
+    edges: [
+      { edge: 'queue-worker', kind: 'ctrl' },
+      { edge: 'lambda-pepper', kind: 'db' },
+      { edge: 'lambda-media', kind: 'sig' },
+      { edge: 'media-lambda', kind: 'sig' },
+      { edge: 'lambda-vn', kind: 'sig' },
+      { edge: 'vn-mem', kind: 'mem' },
+      { edge: 'vn-gw', kind: 'tool' },
+      { edge: 'gw-rest', kind: 'tool' },
+      { edge: 'rest-lambdas', kind: 'tool' },
+    ],
+    packets: [
+      { edge: 'queue-worker', kind: 'ctrl', count: 1, delay: 0 },
+      { edge: 'lambda-pepper', kind: 'db', count: 1, delay: 250 },
+      { edge: 'lambda-media', kind: 'sig', count: 1, delay: 500 },
+      { edge: 'lambda-vn', kind: 'sig', count: 1, delay: 900 },
+      { edge: 'vn-mem', kind: 'mem', count: 1, delay: 1150 },
+      { edge: 'vn-gw', kind: 'tool', count: 1, delay: 1400 },
+      { edge: 'gw-rest', kind: 'tool', count: 1, delay: 1650 },
+      { edge: 'rest-lambdas', kind: 'tool', count: 1, delay: 1900 },
+    ],
+  },
+  {
+    title: 'Voice note: encode OGG out, write memory, reply as a voice message',
+    body: 'The runtime captures the <span class="hl">24 kHz PCM</span> spoken response, <span class="hl">encodes it back to OGG Opus</span>, and <b>writes events to shared memory</b>. The audio returns to the <span class="hl">worker</span>, which sends it via the Messages API as a WhatsApp <span class="hl">AUDIO (voice) message</span> - voice in, voice out. <b>Side branch:</b> only if no usable audio is produced does the worker fall back to a short could-not-understand text reply.',
+    meta: { Encode: '24 kHz PCM -> OGG Opus', Memory: 'write events at end', Reply: 'Messages API AUDIO (voice) message', Fallback: 'text "could not understand" only if no audio' },
+    nodes: ['voiceNotesRuntime', 'sharedMemory', 'worker', 'winTable', 'metaMessages'],
+    edges: [
+      { edge: 'vn-lambda', kind: 'sig' },
+      { edge: 'vn-mem', kind: 'mem' },
+      { edge: 'lambda-window', kind: 'db' },
+      { edge: 'lambda-messages', kind: 'sig' },
+    ],
+    packets: [
+      { edge: 'vn-mem', kind: 'mem', count: 1, delay: 0 },
+      { edge: 'vn-lambda', kind: 'sig', count: 1, delay: 300 },
+      { edge: 'lambda-window', kind: 'db', count: 1, delay: 600 },
+      { edge: 'lambda-messages', kind: 'sig', count: 1, delay: 900 },
+    ],
+  },
+  {
+    title: 'One memory, three modalities: cross-channel continuity',
+    body: 'Whichever channel a customer uses, the same <code>customer_id</code> resolves to the <b>same shared AgentCore Memory</b>. The Call, Chat, and VoiceNotes runtimes each read long-term insights at start and write raw events at end; the consolidation pipeline distills those events into durable insights under the <code>customer_id</code> namespace. That is what lets the restaurant recognize a returning customer across text, voice note, and call - one continuous relationship over one WhatsApp number.',
+    meta: { Key: 'same customer_id -> same memory', Tiers: 'short-term events (30-day) + long-term insights', Continuity: 'long-term recall spans all three runtimes' },
+    nodes: ['callRuntime', 'chatRuntime', 'voiceNotesRuntime', 'sharedMemory'],
+    edges: [
+      { edge: 'call-mem', kind: 'mem' },
+      { edge: 'chat-mem', kind: 'mem' },
+      { edge: 'vn-mem', kind: 'mem' },
+    ],
+    packets: [
+      { edge: 'call-mem', kind: 'mem', count: 2, delay: 0, spread: 600 },
+      { edge: 'chat-mem', kind: 'mem', count: 2, delay: 200, spread: 600 },
+      { edge: 'vn-mem', kind: 'mem', count: 2, delay: 400, spread: 600 },
+    ],
+  },
+];
+
+// ===================================================================
+// ICONS - small, dense SVGs that read at 32px. AWS brand-ish colors.
+// ===================================================================
+
+const ICONS = {
+  whatsapp: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#25d366"/><path d="M16 7c-5 0-9 4-9 9 0 1.6.4 3.1 1.2 4.4L7 25l4.7-1.2c1.3.7 2.8 1.1 4.3 1.1 5 0 9-4 9-9s-4-9-9-9z" fill="#fff"/><path d="M12.5 11.5c-.3 0-.6.1-.8.4-.3.3-.9.9-.9 2.1s.9 2.4 1 2.6c.1.2 1.7 2.8 4.3 3.8 2.1.8 2.6.7 3 .6.6-.1 1.4-.6 1.6-1.2.2-.6.2-1.1.1-1.2-.1-.1-.3-.2-.6-.3l-1.4-.7c-.2-.1-.4-.1-.6.1l-.6.8c-.1.2-.3.2-.5.1-.3-.1-1.2-.5-2-1.3-.6-.6-1-1.3-1.1-1.5-.1-.2 0-.3.1-.4l.3-.4c.1-.1.1-.3.2-.4 0-.2 0-.3 0-.4l-.7-1.6c-.2-.4-.4-.4-.6-.4z" fill="#25d366"/></svg>`,
+  lambda: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#ed7100"/><path d="M9 24h4l4-10 2 5h-2l-3 5h5l-5-12h-4L9 24z" fill="#fff"/></svg>`,
+  dynamodb: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#4d72f3"/><ellipse cx="16" cy="9" rx="8" ry="2.5" fill="#fff" opacity=".85"/><path d="M8 9v14c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5V9" stroke="#fff" stroke-width="1.5" fill="none" opacity=".85"/><path d="M8 14.5c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5M8 20c0 1.4 3.6 2.5 8 2.5s8-1.1 8-2.5" stroke="#fff" stroke-width="1.2" fill="none" opacity=".5"/></svg>`,
+  apigw: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#e7157b"/><path d="M8 10l4 6-4 6M24 10l-4 6 4 6M14 8l-2 16M20 8l-2 16" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round"/></svg>`,
+  bedrock: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#01a88d"/><path d="M16 7l3 5 5 1-3.5 4 1 6-5.5-3-5.5 3 1-6L8 13l5-1z" fill="#fff"/></svg>`,
+  agentcore: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#01a88d"/><path d="M16 6l7 4v8l-7 4-7-4v-8z" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="16" cy="15" r="2.5" fill="#fff"/></svg>`,
+  ssm: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#dd344c"/><circle cx="16" cy="16" r="6" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M16 8v3M16 21v3M8 16h3M21 16h3M10.5 10.5l2 2M19.5 19.5l2 2M10.5 21.5l2-2M19.5 12.5l2-2" stroke="#fff" stroke-width="1.5"/></svg>`,
+  location: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#7aa116"/><path d="M16 8c-3.3 0-6 2.7-6 6 0 4.5 6 12 6 12s6-7.5 6-12c0-3.3-2.7-6-6-6z" fill="#fff"/><circle cx="16" cy="14" r="2.2" fill="#7aa116"/></svg>`,
+  transcribe: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#01a88d"/><rect x="14.5" y="7" width="3" height="11" rx="1.5" fill="#fff"/><path d="M10 14v1c0 3.3 2.7 6 6 6s6-2.7 6-6v-1" stroke="#fff" stroke-width="1.5" fill="none"/><path d="M16 21v3M12 24h8" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+  kvs: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#8c4fff"/><circle cx="9" cy="16" r="2.4" fill="#fff"/><circle cx="23" cy="16" r="2.4" fill="#fff"/><path d="M11.4 16h9.2" stroke="#fff" stroke-width="1.6" stroke-dasharray="2 2"/><path d="M16 9.5l2.2 2.2M16 22.5l2.2-2.2M16 9.5l-2.2 2.2M16 22.5l-2.2-2.2" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/></svg>`,
+  secrets: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#dd344c"/><rect x="9" y="14" width="14" height="10" rx="2" fill="#fff"/><path d="M12 14v-2.5a4 4 0 0 1 8 0V14" stroke="#fff" stroke-width="1.8" fill="none"/><circle cx="16" cy="19" r="1.6" fill="#dd344c"/></svg>`,
+  memory: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#01a88d"/><rect x="9" y="9" width="14" height="14" rx="2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M12 6v3M16 6v3M20 6v3M12 23v3M16 23v3M20 23v3M6 12h3M6 16h3M6 20h3M23 12h3M23 16h3M23 20h3" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/><circle cx="16" cy="16" r="2.4" fill="#fff"/></svg>`,
+  sqs: `<svg viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="6" fill="#e7157b"/><rect x="6" y="11" width="9" height="7" rx="1.5" fill="#fff"/><rect x="17" y="14" width="9" height="7" rx="1.5" fill="#fff" opacity=".7"/><path d="M15 14.5h2" stroke="#e7157b" stroke-width="1.4"/></svg>`,
+};
+
+const ICON_LABELS = {
+  whatsapp: 'Meta WhatsApp Business Platform',
+  lambda: 'AWS Lambda',
+  dynamodb: 'Amazon DynamoDB',
+  apigw: 'Amazon API Gateway',
+  bedrock: 'Amazon Bedrock',
+  agentcore: 'Amazon Bedrock AgentCore',
+  ssm: 'AWS Systems Manager',
+  location: 'Amazon Location Service',
+  transcribe: 'Amazon Transcribe',
+  kvs: 'Amazon Kinesis Video Streams managed TURN',
+  secrets: 'AWS Secrets Manager',
+  memory: 'Amazon Bedrock AgentCore Memory (shared)',
+  sqs: 'Amazon SQS (inbound queue + DLQ)',
+};
+
+// Wrap an ICONS entry with role="img" + <title> for assistive tech.
+function renderIcon(iconKey) {
+  const svg = ICONS[iconKey] || '';
+  if (!svg) return '';
+  const label = ICON_LABELS[iconKey] || 'icon';
+  return svg
+    .replace('<svg ', `<svg role="img" aria-label="${label}" `)
+    .replace('>', `><title>${label}</title>`);
+}
+
+// ===================================================================
+// Packet-color lookup, mapped from a step's `kind` to a CSS var.
+// ===================================================================
+const PACKET_COLORS = {
+  sig:        'var(--sig)',
+  audioIn:    'var(--audio-in)',
+  audioOut:   'var(--audio-out)',
+  ctrl:       'var(--ctrl)',
+  tool:       'var(--tool)',
+  db:         'var(--db)',
+  mem:        'var(--mem)',
+  transcribe: 'var(--transcribe)',
+};
+
+// ===================================================================
+// RENDERING - build the static topology once, then per-step updates
+// only change activation state.
+// ===================================================================
+
+const svg = document.getElementById('svg');
+const clustersG = document.getElementById('clusters');
+const edgesBaseG = document.getElementById('edgesBase');
+const edgesHotG = document.getElementById('edgesHot');
+const packetsG = document.getElementById('packets');
+const nodeLayer = document.getElementById('nodeLayer');
+const tooltipEl = document.getElementById('tooltip');
+
+function nodeCenter(n) { return { x: n.x + n.w / 2, y: n.y + n.h / 2 }; }
+
+// Convert SVG viewBox coords to screen pixel coords for HTML overlay placement.
+function svgToScreen(x, y) {
+  const stage = document.getElementById('stage');
+  const rect = stage.getBoundingClientRect();
+  const vb = svg.viewBox.baseVal;
+  const scale = Math.min(rect.width / vb.width, rect.height / vb.height);
+  const offX = (rect.width - vb.width * scale) / 2;
+  const offY = (rect.height - vb.height * scale) / 2;
+  return { x: x * scale + offX, y: y * scale + offY, scale };
+}
+
+// Clusters
+for (const c of CLUSTERS) {
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', c.x); rect.setAttribute('y', c.y);
+  rect.setAttribute('width', c.w); rect.setAttribute('height', c.h);
+  rect.setAttribute('rx', 12);
+  rect.setAttribute('fill', c.color);
+  rect.setAttribute('fill-opacity', 0.04);
+  rect.setAttribute('stroke', c.color);
+  rect.setAttribute('stroke-opacity', 0.35);
+  rect.setAttribute('stroke-dasharray', '4 6');
+  rect.setAttribute('stroke-width', 1);
+  clustersG.appendChild(rect);
+
+  const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  label.setAttribute('x', c.x + 14);
+  label.setAttribute('y', c.y + 22);
+  label.setAttribute('class', 'cluster-label');
+  label.setAttribute('fill', c.color);
+  label.setAttribute('fill-opacity', 0.55);
+  label.textContent = c.label;
+  clustersG.appendChild(label);
+}
+
+// Compute SVG path `d` for an edge. `curve` controls vertical bow.
+function edgePath(from, to, curve) {
+  const a = nodeCenter(NODES[from]);
+  const b = nodeCenter(NODES[to]);
+  const mx = (a.x + b.x) / 2;
+  const my = (a.y + b.y) / 2 + curve;
+  return `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`;
+}
+
+// Build edges. Each has a muted "base" line that's always visible (so
+// people can read the topology) and a "hot" line that pulses when active.
+// SOLID = signaling/control/tool/db; DASHED (e.dashed) = DTLS/SRTP media.
+const edgeHotElements = {};
+const edgeBaseElements = {};
+for (const e of EDGES) {
+  const d = edgePath(e.from, e.to, e.curve);
+  const base = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  base.setAttribute('d', d);
+  base.setAttribute('class', 'edge-base');
+  base.setAttribute('stroke', e.color);
+  base.setAttribute('id', `edge-base-${e.id}`);
+  if (e.dashed) base.setAttribute('stroke-dasharray', '6 6');
+  base.style.color = e.color;
+  edgesBaseG.appendChild(base);
+  edgeBaseElements[e.id] = base;
+
+  const hot = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  hot.setAttribute('d', d);
+  hot.setAttribute('class', 'edge-hot');
+  hot.setAttribute('id', `edge-hot-${e.id}`);
+  hot.setAttribute('stroke', e.color);
+  if (e.dashed) hot.setAttribute('stroke-dasharray', '6 6');
+  hot.style.color = e.color;
+  hot.setAttribute('marker-end', 'url(#arrow)');
+  edgesHotG.appendChild(hot);
+  edgeHotElements[e.id] = hot;
+}
+
+// Build nodes (HTML overlays for the icon + label).
+const nodeElements = {};
+function renderNodes() {
+  nodeLayer.innerHTML = '';
+  for (const [key, n] of Object.entries(NODES)) {
+    const pos = svgToScreen(n.x + n.w / 2, n.y + n.h / 2);
+    const el = document.createElement('div');
+    el.className = 'node-box';
+    el.style.left = pos.x + 'px';
+    el.style.top = pos.y + 'px';
+    el.style.transform = 'translate(-50%, -50%)';
+    el.innerHTML = `
+      <div class="node-icon">${renderIcon(n.icon)}</div>
+      <div class="node-text">
+        <div class="node-title">${n.label}</div>
+        <div class="node-sub">${n.sub}</div>
+      </div>
+    `;
+    el.addEventListener('mouseenter', (ev) => showTooltip(ev, key, n));
+    el.addEventListener('mousemove', (ev) => moveTooltip(ev));
+    el.addEventListener('mouseleave', () => hideTooltip());
+    nodeLayer.appendChild(el);
+    nodeElements[key] = el;
+  }
+}
+
+function showTooltip(ev, key, node) {
+  tooltipEl.innerHTML = `<div class="tooltip-title">${node.label}</div><div>${node.sub.replace(/<[^>]*>/g, '')}</div>`;
+  tooltipEl.classList.add('show');
+  moveTooltip(ev);
+}
+function moveTooltip(ev) {
+  tooltipEl.style.left = (ev.clientX + 14) + 'px';
+  tooltipEl.style.top = (ev.clientY + 14) + 'px';
+}
+function hideTooltip() { tooltipEl.classList.remove('show'); }
+
+// ===================================================================
+// Packet animation - small glowing dot traverses an edge's path.
+// ===================================================================
+
+function firePacket(edgeId, kindColor, durationMs) {
+  const pathEl = edgeHotElements[edgeId];
+  if (!pathEl) return;
+  const pathD = pathEl.getAttribute('d');
+
+  const measure = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  measure.setAttribute('d', pathD);
+  measure.style.visibility = 'hidden';
+  svg.appendChild(measure);
+  const total = measure.getTotalLength();
+
+  const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  dot.setAttribute('r', 5);
+  dot.setAttribute('fill', kindColor);
+  dot.setAttribute('class', 'packet');
+  dot.style.color = kindColor;
+  packetsG.appendChild(dot);
+
+  const start = performance.now();
+  function tick(now) {
+    const t = Math.min(1, (now - start) / durationMs);
+    const p = measure.getPointAtLength(t * total);
+    dot.setAttribute('cx', p.x);
+    dot.setAttribute('cy', p.y);
+    if (t < 1) requestAnimationFrame(tick);
+    else { dot.remove(); measure.remove(); }
+  }
+  requestAnimationFrame(tick);
+}
+
+// ===================================================================
+// Step application
+// ===================================================================
+
+let currentStep = -1;
+let autoPlayTimer = null;
+let autoPlaying = false;
+const BASE_AUTOPLAY_MS = 3500;
+function currentSpeedMultiplier() {
+  const slider = document.getElementById('speedSlider');
+  return slider ? Number(slider.value) / 3 : 1;
+}
+function currentAutoplayMs() {
+  return Math.max(400, Math.round(BASE_AUTOPLAY_MS / currentSpeedMultiplier()));
+}
+
+function applyStep(idx) {
+  currentStep = idx;
+  const step = STEPS[idx];
+
+  document.getElementById('stepCounter').textContent = `STEP ${idx + 1} OF ${STEPS.length}`;
+  document.getElementById('stepTitle').textContent = step.title;
+  document.getElementById('stepBody').innerHTML = step.body;
+
+  const metaEl = document.getElementById('stepMeta');
+  metaEl.innerHTML = Object.entries(step.meta || {})
+    .map(([k, v]) => `<span class="k">${k}</span> <span class="v">${v}</span>`)
+    .join('<br/>');
+
+  document.getElementById('progressInner').style.width = ((idx + 1) / STEPS.length * 100) + '%';
+
+  let activeRow = null;
+  for (const row of document.querySelectorAll('.step-row')) {
+    const rowIdx = Number(row.dataset.idx);
+    row.classList.toggle('active', rowIdx === idx);
+    row.classList.toggle('done', rowIdx < idx);
+    if (rowIdx === idx) activeRow = row;
+  }
+  if (activeRow) activeRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  const activeSet = new Set(step.nodes);
+  const hasFocus = activeSet.size > 0;
+  for (const [key, el] of Object.entries(nodeElements)) {
+    el.classList.toggle('active', activeSet.has(key));
+    // Focus mode: when a step highlights a subset, fade the rest so the
+    // eye follows the active path instead of the whole crowded graph.
+    el.classList.toggle('dim', hasFocus && !activeSet.has(key));
+  }
+
+  const activeEdges = new Set((step.edges || []).map((e) => e.edge));
+  for (const [id, el] of Object.entries(edgeHotElements)) {
+    el.classList.toggle('on', activeEdges.has(id));
+  }
+  for (const [id, el] of Object.entries(edgeBaseElements)) {
+    el.classList.toggle('live', activeEdges.has(id));
+  }
+
+  for (const p of step.packets || []) {
+    const count = p.count || 1;
+    const spread = p.spread || 0;
+    const baseDelay = p.delay || 0;
+    const dur = 1200;
+    for (let i = 0; i < count; i++) {
+      setTimeout(() => firePacket(p.edge, PACKET_COLORS[p.kind] || '#fff', dur),
+        baseDelay + (i * (spread / Math.max(1, count))));
+    }
+  }
+
+  document.getElementById('prevStep').disabled = (idx === 0);
+  document.getElementById('nextStep').disabled = (idx === STEPS.length - 1);
+}
+
+function buildStepsList() {
+  const list = document.getElementById('stepsList');
+  list.innerHTML = '';
+  STEPS.forEach((s, i) => {
+    const row = document.createElement('div');
+    row.className = 'step-row';
+    row.dataset.idx = i;
+    row.innerHTML = `<div class="step-row-num">${String(i + 1).padStart(2, '0')}</div><div>${s.title}</div>`;
+    row.addEventListener('click', () => { stopAutoPlay(); applyStep(i); });
+    list.appendChild(row);
+  });
+}
+
+function startAutoPlay() {
+  autoPlaying = true;
+  document.getElementById('autoPlay').innerHTML = 'Pause';
+  if (currentStep < STEPS.length - 1) applyStep(currentStep + 1);
+  autoPlayTimer = setInterval(() => {
+    if (currentStep >= STEPS.length - 1) { stopAutoPlay(); return; }
+    applyStep(currentStep + 1);
+  }, currentAutoplayMs());
+}
+function stopAutoPlay() {
+  autoPlaying = false;
+  document.getElementById('autoPlay').innerHTML = 'Auto-play';
+  if (autoPlayTimer) { clearInterval(autoPlayTimer); autoPlayTimer = null; }
+}
+function reapplyAutoplayInterval() {
+  if (!autoPlaying || !autoPlayTimer) return;
+  clearInterval(autoPlayTimer);
+  autoPlayTimer = setInterval(() => {
+    if (currentStep >= STEPS.length - 1) { stopAutoPlay(); return; }
+    applyStep(currentStep + 1);
+  }, currentAutoplayMs());
+}
+
+// ===================================================================
+// Wire up controls
+// ===================================================================
+
+document.getElementById('prevStep').addEventListener('click', () => {
+  stopAutoPlay();
+  if (currentStep > 0) applyStep(currentStep - 1);
+});
+document.getElementById('nextStep').addEventListener('click', () => {
+  stopAutoPlay();
+  if (currentStep < STEPS.length - 1) applyStep(currentStep + 1);
+});
+document.getElementById('jumpStart').addEventListener('click', () => { stopAutoPlay(); applyStep(0); });
+document.getElementById('jumpEnd').addEventListener('click', () => { stopAutoPlay(); applyStep(STEPS.length - 1); });
+document.getElementById('restart').addEventListener('click', () => { stopAutoPlay(); applyStep(0); });
+document.getElementById('autoPlay').addEventListener('click', () => {
+  if (autoPlaying) stopAutoPlay();
+  else {
+    if (currentStep >= STEPS.length - 1) applyStep(0);
+    startAutoPlay();
+  }
+});
+
+(function initSpeedSlider() {
+  const slider = document.getElementById('speedSlider');
+  const valueEl = document.getElementById('speedValue');
+  if (!slider || !valueEl) return;
+  const update = () => {
+    const m = currentSpeedMultiplier();
+    valueEl.textContent = m.toFixed(1).replace(/\.0$/, '') + 'x';
+    reapplyAutoplayInterval();
+  };
+  slider.addEventListener('input', update);
+  update();
+})();
+
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === 'ArrowRight' || ev.key === ' ') {
+    ev.preventDefault();
+    stopAutoPlay();
+    if (currentStep < STEPS.length - 1) applyStep(currentStep + 1);
+  } else if (ev.key === 'ArrowLeft') {
+    ev.preventDefault();
+    stopAutoPlay();
+    if (currentStep > 0) applyStep(currentStep - 1);
+  }
+});
+
+window.addEventListener('resize', () => renderNodes());
+
+// Initial render
+renderNodes();
+buildStepsList();
+applyStep(0);
+</script>
+</body>
+</html>

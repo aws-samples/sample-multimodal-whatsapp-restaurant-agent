@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>WhatsApp Restaurant AI Host - Meta / WhatsApp Setup Guide</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root {
+    --bg-0: #05070d;
+    --bg-1: #0a0f1a;
+    --bg-2: #111a2d;
+    --grid: rgba(80,120,200,.05);
+    --txt: #d7e1f0;
+    --txt-dim: #7b8aa5;
+    --txt-mute: #4a5669;
+    --glass: rgba(20,30,50,.55);
+    --glass-brd: rgba(120,180,255,.2);
+    --wa: #25d366;
+    --sig: #ff9f43;
+    --secret: #fb7185;
+    --config: #34d399;
+    --ctrl: #5aa4ff;
+    --warn: #facc15;
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg-0); color: var(--txt); font-family: var(--sans); line-height: 1.6; }
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse at 20% 10%, rgba(60,120,220,.10), transparent 60%),
+      radial-gradient(ellipse at 80% 90%, rgba(37,211,102,.06), transparent 60%),
+      linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 48px 48px,
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 48px 48px,
+      var(--bg-0);
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    padding: 16px 28px;
+    backdrop-filter: blur(12px);
+    background: linear-gradient(180deg, rgba(10,15,26,.92), rgba(10,15,26,.6));
+    border-bottom: 1px solid var(--glass-brd);
+  }
+  header h1 { font-size: 16px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 10px; }
+  header h1::before { content: ''; width: 9px; height: 9px; border-radius: 50%; background: var(--wa); box-shadow: 0 0 10px var(--wa); animation: pulse 2s ease-in-out infinite; }
+  header p { margin: 6px 0 0 19px; font-size: 12px; color: var(--txt-dim); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+  main { position: relative; z-index: 1; max-width: 980px; margin: 0 auto; padding: 32px 28px 80px; }
+
+  section { margin: 0 0 40px; }
+  h2 { font-size: 20px; margin: 0 0 4px; letter-spacing: .01em; }
+  h2 .tag { font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em; padding: 3px 8px; border-radius: 6px; vertical-align: middle; margin-left: 10px; }
+  .tag-a { background: rgba(255,159,67,.14); color: var(--sig); border: 1px solid rgba(255,159,67,.35); }
+  .tag-b { background: rgba(90,164,255,.14); color: var(--ctrl); border: 1px solid rgba(90,164,255,.35); }
+  h3 { font-size: 15px; margin: 26px 0 8px; color: #eaf1fb; }
+  .lead { color: var(--txt-dim); font-size: 14px; margin: 6px 0 18px; }
+
+  .panel { background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 14px; padding: 22px 26px; backdrop-filter: blur(8px); }
+  .panel + .panel { margin-top: 18px; }
+
+  ol.steps { counter-reset: step; list-style: none; padding: 0; margin: 0; }
+  ol.steps > li {
+    counter-increment: step; position: relative; padding: 0 0 22px 46px; margin: 0;
+    border-left: 1px solid rgba(120,180,255,.16); margin-left: 14px;
+  }
+  ol.steps > li:last-child { border-left: 1px solid transparent; padding-bottom: 0; }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: -15px; top: -2px;
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font: 600 13px var(--mono); color: var(--bg-0);
+    background: linear-gradient(135deg, var(--wa), #14a850);
+    box-shadow: 0 0 14px rgba(37,211,102,.4);
+  }
+  ol.steps.blue > li::before { background: linear-gradient(135deg, var(--ctrl), #2f6fd0); box-shadow: 0 0 14px rgba(90,164,255,.4); }
+  ol.steps > li .st { font-weight: 600; color: #eaf1fb; display: block; margin-bottom: 3px; }
+  ol.steps > li .sb { color: var(--txt-dim); font-size: 13.5px; }
+  ol.steps > li .sb code { background: rgba(120,180,255,.1); padding: 1px 5px; border-radius: 4px; font: 12px var(--mono); color: #cfe0f5; }
+
+  .pill { display: inline-block; font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 2px 7px; border-radius: 5px; margin-right: 6px; }
+  .pill-secret { background: rgba(251,113,133,.14); color: var(--secret); border: 1px solid rgba(251,113,133,.4); }
+  .pill-config { background: rgba(52,211,153,.14); color: var(--config); border: 1px solid rgba(52,211,153,.4); }
+  .pill-url { background: rgba(90,164,255,.14); color: var(--ctrl); border: 1px solid rgba(90,164,255,.4); }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 0; font-size: 13px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid rgba(120,180,255,.12); vertical-align: top; }
+  th { font: 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--txt-dim); font-weight: 600; }
+  td code { font: 12px var(--mono); color: #cfe0f5; background: rgba(120,180,255,.08); padding: 1px 5px; border-radius: 4px; }
+  td .dest { font-size: 12px; }
+
+  .callout { border-radius: 12px; padding: 14px 18px; margin: 16px 0; font-size: 13.5px; display: flex; gap: 12px; align-items: flex-start; }
+  .callout .ic { font-size: 16px; line-height: 1.3; }
+  .callout-warn { background: rgba(250,204,21,.08); border: 1px solid rgba(250,204,21,.3); }
+  .callout-warn .ic { color: var(--warn); }
+  .callout-secret { background: rgba(251,113,133,.08); border: 1px solid rgba(251,113,133,.3); }
+  .callout-secret .ic { color: var(--secret); }
+  .callout-info { background: rgba(90,164,255,.07); border: 1px solid rgba(90,164,255,.28); }
+  .callout-info .ic { color: var(--ctrl); }
+  .callout b { color: #eaf1fb; }
+
+  pre { background: #070b14; border: 1px solid rgba(120,180,255,.16); border-radius: 10px; padding: 16px 18px; overflow-x: auto; font: 12.5px var(--mono); color: #cfe0f5; margin: 14px 0; }
+  pre .cm { color: var(--txt-mute); }
+  pre .fl { color: var(--sig); }
+  pre .vl { color: var(--config); }
+
+  a { color: var(--ctrl); text-decoration: none; border-bottom: 1px solid rgba(90,164,255,.3); }
+  a:hover { border-bottom-color: var(--ctrl); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 0 0 24px; font-size: 12px; color: var(--txt-dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+
+  .reflist { columns: 2; column-gap: 32px; font-size: 12.5px; }
+  .reflist a { display: block; margin-bottom: 7px; break-inside: avoid; }
+
+  .phasebar { display: flex; gap: 0; margin: 0 0 30px; border-radius: 12px; overflow: hidden; border: 1px solid var(--glass-brd); }
+  .phasebar div { flex: 1; padding: 14px 18px; font-size: 12.5px; }
+  .phasebar .pa { background: rgba(255,159,67,.1); border-right: 1px solid var(--glass-brd); }
+  .phasebar .pd { background: rgba(90,164,255,.1); border-right: 1px solid var(--glass-brd); }
+  .phasebar .pb { background: rgba(37,211,102,.08); }
+  .phasebar b { color: #eaf1fb; display: block; margin-bottom: 3px; }
+  .phasebar small { color: var(--txt-mute); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WhatsApp Restaurant AI Host &mdash; Meta / WhatsApp Setup Guide</h1>
+  <p>What to set up in Meta before you deploy, and how each value flows into the AWS deployment. Two phases, because the webhook URL only exists after deploy.</p>
+</header>
+
+<main>
+
+  <section>
+    <div class="panel">
+      <p class="lead" style="margin-top:0">
+        You set up the WhatsApp side once, in the Meta consoles. Some of the values you collect are
+        <b>secrets</b> and some are plain <b>configuration</b>. They take different paths into the AWS
+        deployment, and getting that split right matters for security.
+      </p>
+      <div class="legend">
+        <span><span class="pill pill-secret">secret</span> goes to AWS Secrets Manager out-of-band &mdash; never a CDK parameter, never in source or the synthesized template</span>
+        <span><span class="pill pill-config">config</span> safe as a CDK parameter / context via <code style="font:12px var(--mono);color:#cfe0f5">deploy-all.sh</code></span>
+        <span><span class="pill pill-url">post-deploy</span> only known after the AWS stack is deployed</span>
+      </div>
+      <div class="phasebar">
+        <div class="pa"><small>Phase A &middot; before deploy</small><b>Create the app + collect values</b>Developer app + WhatsApp product gives a sandbox test number + WABA. Collect the IDs, App Secret, a token, and pick a Verify Token.</div>
+        <div class="pd"><small>deploy</small><b>Run deploy-all.sh</b>Populate the secrets, pass config flags, get the AWS-managed webhook URL out.</div>
+        <div class="pb"><small>Phase B &middot; after deploy</small><b>Finish wiring in Meta</b>Register the webhook URL, complete the verify handshake, subscribe to fields, enable Calling.</div>
+      </div>
+      <div class="callout callout-info" style="margin-bottom:0">
+        <span class="ic">&#9889;</span>
+        <div><b>This guide targets the quick-test path</b> &mdash; what you need to stand up a working demo fast, using Meta's free sandbox <b>test number</b>. Business verification, a registered production number, display-name review, and App Review are <b>real-business / go-live</b> steps; they are NOT required to test and are collected separately under <a href="#production">Going to production</a> at the end.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PHASE A ============ -->
+  <section>
+    <h2>Phase A &mdash; Set up WhatsApp and collect what you need <span class="tag tag-a">before deploy</span></h2>
+    <p class="lead">All of this happens in the Meta consoles. None of it touches AWS yet.</p>
+
+    <h3>A.1 &nbsp;Create the app and get a sandbox test number</h3>
+    <div class="panel">
+      <ol class="steps">
+        <li><span class="st">Create a Meta Developer App (type: Business)</span><span class="sb">At <a href="https://developers.facebook.com/">developers.facebook.com</a> &rarr; My Apps &rarr; Create App &rarr; choose the <b>Business</b> type. If you have no Business Portfolio yet, Meta auto-creates a default one and links the app to it &mdash; you do <b>not</b> need to create or verify a business to test.</span></li>
+        <li><span class="st">Add the WhatsApp product to the app</span><span class="sb">In the app dashboard, click <b>Add Product</b> and add <b>WhatsApp</b>. This automatically provisions a <b>WhatsApp Business Account (WABA)</b> and a free <b>test number</b> you can use immediately &mdash; no business verification, no number registration.</span></li>
+        <li><span class="st">Add your phone as a test recipient</span><span class="sb">In WhatsApp &rarr; API Setup, under <b>To</b>, add and verify your own WhatsApp number as an allowed recipient. In test mode the sandbox number can message up to 5 verified recipients &mdash; enough to exercise text, voice notes, and calls end to end.</span></li>
+      </ol>
+      <div class="callout callout-info">
+        <span class="ic">&#9432;</span>
+        <div>The sandbox <b>test number</b> is the one number behind all three channels for the demo &mdash; the recipient taps it to <b>message</b> and to <b>call</b> (text, voice notes, calls). When you later move to a real business number, see <a href="#production">Going to production</a>.</div>
+      </div>
+    </div>
+
+    <h3>A.2 &nbsp;Collect the values the deployment needs</h3>
+    <div class="panel">
+      <ol class="steps">
+        <li><span class="st">Copy the Phone Number ID and WABA ID</span><span class="sb"><span class="pill pill-config">config</span> In WhatsApp &rarr; API Setup, copy the <b>Phone Number ID</b> (a numeric id, not the phone number itself) and the <b>WhatsApp Business Account ID</b>. These are identifiers, not secrets.</span></li>
+        <li><span class="st">Copy the App ID and App Secret</span><span class="sb"><span class="pill pill-config">config</span> App ID &nbsp;&middot;&nbsp; <span class="pill pill-secret">secret</span> App Secret. Both live in App Settings &rarr; Basic. The <b>App Secret</b> is the HMAC key Meta uses to sign every webhook (<code>X-Hub-Signature-256</code>); the deployed Lambda recomputes that signature to prove a request really came from Meta. Treat it like a password.</span></li>
+        <li><span class="st">Get an Access Token</span><span class="sb"><span class="pill pill-secret">secret</span> <b>Quick test:</b> the temporary token shown in WhatsApp &rarr; API Setup works immediately, but expires in ~24 hours &mdash; fine to validate the flow, just re-run the secret-populate step when it lapses. <b>Recommended even for the sample:</b> in Business Settings &rarr; Users &rarr; <b>System Users</b>, create a system user, assign it to your app and WABA, then <b>Generate Token</b> with scopes <code>whatsapp_business_messaging</code> and <code>whatsapp_business_management</code> for a long-lived token. (System Users use the auto-created portfolio but do <b>not</b> require business verification.)</span></li>
+        <li><span class="st">Choose your own Verify Token</span><span class="sb"><span class="pill pill-secret">secret</span> This one you invent &mdash; any hard-to-guess string (e.g. <code>openssl rand -hex 24</code>). Meta echoes it back during the one-time webhook handshake so your endpoint can confirm the subscription. You will type the same value into the Meta webhook config in Phase B.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ MAPPING TABLE ============ -->
+  <section>
+    <h2>Where each value goes</h2>
+    <p class="lead">This is the contract between &ldquo;what you copied from Meta&rdquo; and &ldquo;how the architecture gets configured.&rdquo; The secret/config split is the part to get right.</p>
+    <div class="callout callout-secret">
+      <span class="ic">&#128273;</span>
+      <div><b>Why secrets are not CDK parameters.</b> Anything passed as a CDK parameter or context value ends up baked into the synthesized CloudFormation template and, often, into source control. For tokens and signing keys that is a leak. So CDK only <b>creates empty Secrets Manager containers</b> and grants the Lambda scoped read access; <b>you populate the values out-of-band</b> after the secret exists. The non-secret identifiers are fine to pass as parameters.</div>
+    </div>
+    <div class="callout callout-info">
+      <span class="ic">&#9432;</span>
+      <div><b>So can deploy-all.sh create and populate the secret for me?</b> Yes &mdash; and that is the recommended flow. CDK makes the empty container; then <code>deploy-all.sh</code> runs <code>aws secretsmanager put-secret-value</code> to inject the value. Two rules keep it safe: (1) pass the value as an <b>environment variable, not a <code>--flag</code></b> &mdash; a flag value leaks into shell history and <code>ps</code> output, an env var does not; (2) keep it <b>idempotent</b> &mdash; if the env var is set, put the value; if it is empty, skip and assume the secret was populated by hand, so re-running deploy never wipes a secret you set manually. This is exactly the empty-container-then-put pattern below; the only thing to avoid is turning the value into a <code>CfnParameter</code>.</div>
+    </div>
+    <div class="panel">
+      <table>
+        <thead><tr><th>Value from Meta</th><th>Kind</th><th>Destination</th><th>How it gets there</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Access Token <span style="color:var(--txt-mute)">(System User, permanent)</span></td>
+            <td><span class="pill pill-secret">secret</span></td>
+            <td class="dest">Secrets Manager<br><code>&lt;prefix&gt;-whatsapp-access-token</code></td>
+            <td>CDK creates the empty secret; you run <code>aws secretsmanager put-secret-value</code> after deploy (or let <code>deploy-all.sh</code> read it from an env var and put it for you).</td>
+          </tr>
+          <tr>
+            <td>App Secret</td>
+            <td><span class="pill pill-secret">secret</span></td>
+            <td class="dest">Secrets Manager<br><code>&lt;prefix&gt;-whatsapp-app-secret</code></td>
+            <td>Same pattern. Used by the Lambda for the <code>X-Hub-Signature-256</code> HMAC gate.</td>
+          </tr>
+          <tr>
+            <td>Verify Token <span style="color:var(--txt-mute)">(you choose)</span></td>
+            <td><span class="pill pill-secret">secret</span></td>
+            <td class="dest">Secrets Manager<br><code>&lt;prefix&gt;-whatsapp-verify-token</code></td>
+            <td>Same pattern. The Lambda compares it during the GET verify handshake.</td>
+          </tr>
+          <tr>
+            <td>Phone Number ID</td>
+            <td><span class="pill pill-config">config</span></td>
+            <td class="dest">CDK parameter / context</td>
+            <td>Passed via a <code>deploy-all.sh</code> flag (planned: <code>--phone-number-id</code>). Used to address <code>POST /&lt;PHONE_NUMBER_ID&gt;/...</code> for replies and call actions.</td>
+          </tr>
+          <tr>
+            <td>WhatsApp Business Account ID</td>
+            <td><span class="pill pill-config">config</span></td>
+            <td class="dest">CDK parameter / context</td>
+            <td>Passed via a <code>deploy-all.sh</code> flag (planned: <code>--waba-id</code>). Used for management API calls and templates.</td>
+          </tr>
+          <tr>
+            <td>App ID</td>
+            <td><span class="pill pill-config">config</span></td>
+            <td class="dest">CDK parameter / context (optional)</td>
+            <td>Passed via a flag (planned: <code>--app-id</code>) where the deployment needs to reference the app.</td>
+          </tr>
+          <tr>
+            <td>Webhook URL</td>
+            <td><span class="pill pill-url">post-deploy</span></td>
+            <td class="dest">Emitted by AWS, typed into Meta</td>
+            <td>Not collected from Meta &mdash; it is an <b>output</b> of the deploy (API Gateway <code>execute-api</code> URL). You paste it into Meta in Phase B.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout callout-warn">
+      <span class="ic">&#9888;</span>
+      <div><b>Status of the flags.</b> The webhook stack is the next thing to be built (Task 3 in the plan), so <code>deploy-all.sh</code> does not have the Meta flags yet &mdash; the names above (<code>--phone-number-id</code>, <code>--waba-id</code>, <code>--app-id</code>) are the <b>intended contract</b> that Task 3 will implement. Today the script's flags are deployment-mechanics only (<code>--deploymentPrefix</code>, <code>--mode</code>, <code>--only</code>, etc.). This guide documents the target so the build lands on it.</div>
+    </div>
+  </section>
+
+  <!-- ============ DEPLOY STEP ============ -->
+  <section>
+    <h2>The deploy step <span class="tag tag-b">in between</span></h2>
+    <p class="lead">Populate the three secrets, pass the config, and read the webhook URL back out.</p>
+    <div class="panel">
+      <p style="margin-top:0;font-size:13.5px;color:var(--txt-dim)">The intended shape once the webhook stack exists. The secret values are passed by environment variable so they never land in shell history flags or the CloudFormation template:</p>
+<pre><span class="cm"># 1. Provide the three Meta secrets as env vars (not as CLI flags).</span>
+<span class="cm">#    Env vars stay out of shell history and `ps` output; a --flag would not.</span>
+<span class="vl">export</span> WHATSAPP_ACCESS_TOKEN=<span class="cm">"EAAG...your-system-user-token"</span>
+<span class="vl">export</span> WHATSAPP_APP_SECRET=<span class="cm">"your-app-secret"</span>
+<span class="vl">export</span> WHATSAPP_VERIFY_TOKEN=<span class="cm">"the-string-you-invented"</span>
+
+<span class="cm"># 2. Deploy. Non-secret identifiers ride as flags; the script puts the</span>
+<span class="cm">#    secret values into the Secrets Manager containers CDK created.</span>
+./scripts/deploy-all.sh \
+  <span class="fl">--deploymentPrefix</span> qsr-wa \
+  <span class="fl">--phone-number-id</span> <span class="vl">XXXXXXXXXXXXXXX</span> \
+  <span class="fl">--waba-id</span> <span class="vl">XXXXXXXXXXXXXXX</span> \
+  <span class="fl">--app-id</span> <span class="vl">XXXXXXXXXX</span>
+
+<span class="cm"># 3. Read the webhook URL out of the deploy outputs.</span>
+cat cdk-outputs/wa-webhook.json   <span class="cm"># -&gt; WebhookUrl: https://abc123.execute-api.us-east-1.amazonaws.com/prod/webhook</span></pre>
+      <p style="margin:18px 0 0;font-size:13.5px;color:var(--txt-dim)">Inside the script, the populate step is an idempotent CLI call per secret &mdash; put the value only when the env var is set, otherwise leave a hand-populated secret untouched:</p>
+<pre><span class="cm"># pseudo-excerpt of what deploy-all.sh runs after CDK creates the empty secret</span>
+<span class="fl">if</span> [ -n <span class="vl">"$WHATSAPP_ACCESS_TOKEN"</span> ]; <span class="fl">then</span>
+  aws secretsmanager put-secret-value \
+    <span class="fl">--secret-id</span> <span class="vl">"qsr-wa-whatsapp-access-token"</span> \
+    <span class="fl">--secret-string</span> <span class="vl">"$WHATSAPP_ACCESS_TOKEN"</span>
+<span class="fl">fi</span>
+<span class="cm"># ...same guard for app-secret and verify-token. Empty env var = skip = no wipe.</span></pre>
+      <div class="callout callout-info" style="margin-bottom:0">
+        <span class="ic">&#9432;</span>
+        <div>The webhook URL is served on the <b>AWS-managed <code>execute-api</code> DNS name with an AWS-managed certificate</b> &mdash; no custom domain, no certificate for you to provision. That certificate-free posture is the whole reason this variant uses WebRTC + an API Gateway webhook instead of SIP. Anyone can deploy it without owning a domain.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PHASE B ============ -->
+  <section>
+    <h2>Phase B &mdash; Finish wiring in Meta <span class="tag tag-b">after deploy</span></h2>
+    <p class="lead">Now that the webhook URL exists, go back to the Meta app and connect it.</p>
+    <div class="panel">
+      <ol class="steps blue">
+        <li><span class="st">Configure the webhook callback URL</span><span class="sb">In the app dashboard &rarr; WhatsApp &rarr; Configuration &rarr; Webhook, click <b>Edit</b>. Paste the <b>Callback URL</b> from <code>cdk-outputs/wa-webhook.json</code> and the <b>Verify Token</b> &mdash; the exact same string you put in Secrets Manager.</span></li>
+        <li><span class="st">Let Meta complete the verification handshake</span><span class="sb">On save, Meta sends a <code>GET</code> with <code>hub.mode=subscribe</code>, <code>hub.verify_token</code>, and <code>hub.challenge</code>. The Lambda checks the token against the secret and echoes the challenge. A green check means the subscription is live.</span></li>
+        <li><span class="st">Subscribe to the webhook fields</span><span class="sb">Subscribe the WABA to <b>messages</b> (text, image, document, audio/voice notes) and <b>calls</b> (the Calling API event carrying the SDP offer). Without these subscriptions, Meta will not POST events to your endpoint.</span></li>
+        <li><span class="st">Enable the Calling API on the number</span><span class="sb">In WhatsApp &rarr; Calling (or via call settings), enable calling for your phone number so the Call channel works. The default configuration is Graph APIs + Webhooks for signaling with WebRTC for media &mdash; exactly what this architecture expects.</span></li>
+        <li><span class="st">Send a test message and place a test call</span><span class="sb">From the WhatsApp number you added as a test recipient, message the sandbox number, send a voice note, and tap Call. Confirm the webhook fires and the agent responds on all three channels. That is a complete working demo &mdash; no business verification needed.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ GOING TO PRODUCTION ============ -->
+  <section id="production">
+    <h2>Going to production <span class="tag tag-a">later, real business only</span></h2>
+    <p class="lead">None of this is needed to test. Do it only when you are taking the sample to a real restaurant on a real number and messaging real customers.</p>
+    <div class="panel">
+      <ol class="steps">
+        <li><span class="st">Create / confirm a Business Portfolio</span><span class="sb">At <a href="https://business.facebook.com/">business.facebook.com</a>, set up the Business Portfolio that owns the app, WABA, and number (the test path used an auto-created one).</span></li>
+        <li><span class="st">Complete business verification</span><span class="sb">In Business Settings &rarr; Security Center, finish verification. Required to message customers beyond your test recipients and to raise messaging limits. It can take days &mdash; start early.</span></li>
+        <li><span class="st">Register a real production phone number + display name</span><span class="sb">In WhatsApp &rarr; API Setup / Phone Numbers, add the real number (must receive the verification code and <b>not</b> already be on the consumer WhatsApp / WhatsApp Business app). Complete code verification and set the business <b>display name</b> (subject to Meta name-review). Re-collect the new <b>Phone Number ID</b> and re-run the config/deploy with it.</span></li>
+        <li><span class="st">Submit for App Review and switch to Live</span><span class="sb">Complete <b>App Review</b> for <code>whatsapp_business_messaging</code> + <code>whatsapp_business_management</code>, then switch the app from Development to <b>Live</b> mode so it can message the general public.</span></li>
+        <li><span class="st">Approve Utility message templates</span><span class="sb">For proactive order confirmations sent outside the 24-hour window, get your Utility templates approved in the WhatsApp Manager.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ REFERENCES ============ -->
+  <section>
+    <h2>Reference links</h2>
+    <p class="lead">The Meta and AWS docs that drive this setup. Same links cited in the design.</p>
+    <div class="panel">
+      <h3 style="margin-top:0">Meta WhatsApp</h3>
+      <div class="reflist">
+        <a href="https://business.facebook.com/">Meta Business Suite (Business Portfolio + verification)</a>
+        <a href="https://developers.facebook.com/">Meta for Developers (apps, tokens)</a>
+        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks/">Set up webhooks</a>
+        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/">Messages webhook reference</a>
+        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/calling">Calling API</a>
+        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/calling/user-initiated-calls">User-initiated calls</a>
+        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/">Calling (business-messaging docs)</a>
+        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/call-settings/">Call settings</a>
+        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media/">Media API reference</a>
+        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages/">Send messages</a>
+      </div>
+      <h3>AWS</h3>
+      <div class="reflist">
+        <a href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc.html">AgentCore Runtime WebRTC support</a>
+        <a href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc-get-started-kvs.html">Get started with WebRTC using KVS</a>
+        <a href="https://aws.amazon.com/blogs/machine-learning/amazon-bedrock-agentcore-memory-building-context-aware-agents/">AgentCore Memory overview</a>
+        <a href="https://docs.aws.amazon.com/kinesisvideostreams-webrtc-dg/latest/devguide/what-is-kvswebrtc.html">What is KVS WebRTC</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

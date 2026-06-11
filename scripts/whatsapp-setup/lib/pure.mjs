@@ -1,0 +1,137 @@
+// Pure, side-effect-free logic for the WhatsApp setup CLI (Task 26).
+//
+// Everything in this module is deterministic and free of network / AWS / prompt
+// I/O so it can be unit-tested (Task 26.3) by feeding plain JS values. The thin
+// I/O wrappers live in graph.mjs (Graph API) and secrets.mjs (Secrets Manager);
+// the orchestration lives in whatsapp-setup.mjs.
+//
+// SECURITY: nothing here logs. Secret values are only ever passed through and
+// returned, never printed. The `redact` helper exists so callers can show a
+// safe hint without leaking the value (R11.6, R1.6).
+
+import { randomBytes } from 'node:crypto';
+
+// The deployment prefix pattern shared by every CDK app in this repo
+// (^[a-z][a-z0-9-]{1,19}$). Re-validated here so the CLI fails fast before it
+// ever calls AWS with a name the stacks would reject.
+export const DEPLOYMENT_PREFIX_REGEX = /^[a-z][a-z0-9-]{1,19}$/;
+
+// The webhook stack (Task 3.2) creates three EMPTY Secrets Manager containers
+// with these deterministic, deployment-prefixed names. The CLI populates these
+// exact names - it never creates new secrets and never renames.
+export function secretNamesForPrefix(prefix) {
+  return {
+    accessToken: `${prefix}-wa-access-token`,
+    appSecret: `${prefix}-wa-app-secret`,
+    verifyToken: `${prefix}-wa-verify-token`,
+  };
+}
+
+// Generate a Verify Token: 24 random bytes -> 48 lowercase hex chars. Used for
+// the Meta webhook subscription handshake (the operator may also supply one).
+export function generateVerifyToken() {
+  return randomBytes(24).toString('hex');
+}
+
+// Mask a secret for safe display: keep a tiny prefix length hint, never the
+// value. Returns e.g. "set (24 chars)" so the operator gets feedback without a
+// leak. NEVER returns any portion of the actual secret.
+export function redact(value) {
+  if (value === undefined || value === null || value === '') {
+    return 'not set';
+  }
+  const len = String(value).length;
+  return `set (${len} chars)`;
+}
+
+// Interpret a Graph API token-validation response. `status` is the HTTP status,
+// `body` is the parsed JSON. Returns { valid, reason }. A 200 with an `id` means
+// the token authenticates; a 190 error subcode means expired/invalid.
+export function interpretTokenValidation(status, body) {
+  if (status === 200 && body && typeof body.id === 'string') {
+    return { valid: true, reason: 'ok' };
+  }
+  const err = (body && body.error) || {};
+  if (err.code === 190 || status === 401) {
+    return {
+      valid: false,
+      reason: 'expired_or_invalid',
+    };
+  }
+  return {
+    valid: false,
+    reason: err.message ? `graph_error: ${err.message}` : `http_${status}`,
+  };
+}
+
+// Given the JSON from GET /{waba-id}/phone_numbers, return the list of
+// { id, displayPhoneNumber, verifiedName } entries (defensive against shape).
+export function parsePhoneNumbers(body) {
+  const data = (body && Array.isArray(body.data)) ? body.data : [];
+  return data.map((p) => ({
+    id: p.id,
+    displayPhoneNumber: p.display_phone_number || '',
+    verifiedName: p.verified_name || '',
+  }));
+}
+
+// Given a list of WABAs (from GET /{business-id}/owned_whatsapp_business_accounts
+// or the app's shared WABAs), return { id, name } entries.
+export function parseWabas(body) {
+  const data = (body && Array.isArray(body.data)) ? body.data : [];
+  return data.map((w) => ({ id: w.id, name: w.name || '' }));
+}
+
+// Selection helper: when exactly one candidate exists, auto-pick it; when many,
+// signal that the caller must prompt; when none, signal not-found. Pure so the
+// prompt path is testable. Returns { mode: 'auto'|'choose'|'none', value? }.
+export function selectSingleOrChoose(candidates) {
+  if (!candidates || candidates.length === 0) {
+    return { mode: 'none' };
+  }
+  if (candidates.length === 1) {
+    return { mode: 'auto', value: candidates[0] };
+  }
+  return { mode: 'choose' };
+}
+
+// Idempotent no-op detection for the app subscription. `existing` is the parsed
+// GET /{app-id}/subscriptions response; we consider the whatsapp_business_account
+// object subscribed with the desired fields a no-op. Returns true when already
+// configured with at least the desired fields and matching callback URL.
+export function isAppSubscriptionConfigured(existing, desired) {
+  const data = (existing && Array.isArray(existing.data)) ? existing.data : [];
+  const wba = data.find((d) => d.object === 'whatsapp_business_account');
+  if (!wba) return false;
+  if (wba.callback_url !== desired.callbackUrl) return false;
+  const have = new Set(
+    (wba.fields || []).map((f) => (typeof f === 'string' ? f : f.name)),
+  );
+  return desired.fields.every((f) => have.has(f));
+}
+
+// Render the copy-pasteable deploy-all.sh invocation for the non-secret config.
+// Secret values are NEVER included here (they go to Secrets Manager only).
+export function renderDeployCommand({ prefix, phoneNumberId, wabaId, appId }) {
+  return [
+    './scripts/deploy-all.sh \\',
+    `  --deploymentPrefix ${prefix} \\`,
+    `  --phone-number-id ${phoneNumberId} \\`,
+    `  --waba-id ${wabaId} \\`,
+    `  --app-id ${appId}`,
+  ].join('\n');
+}
+
+// Render a dotenv-style block for the non-secret config the operator can source
+// before running deploy-all. No secrets here.
+export function renderConfigEnv({ prefix, phoneNumberId, wabaId, appId }) {
+  return [
+    '# WhatsApp non-secret config emitted by whatsapp-setup (no secrets here).',
+    '# Secrets live only in AWS Secrets Manager, populated by this CLI.',
+    `WHATSAPP_DEPLOYMENT_PREFIX=${prefix}`,
+    `WHATSAPP_PHONE_NUMBER_ID=${phoneNumberId}`,
+    `WHATSAPP_WABA_ID=${wabaId}`,
+    `WHATSAPP_APP_ID=${appId}`,
+    '',
+  ].join('\n');
+}
