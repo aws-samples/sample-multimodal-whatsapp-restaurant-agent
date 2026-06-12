@@ -28,10 +28,10 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 # Copy application source.
-COPY handler.py ./
+COPY handler.py ogg_codec.py bounded_sonic.py mcp_tools.py system_prompt.py memory_client.py ./
 
 # Smoke test - fail the build early if imports are broken.
-RUN python -c "import handler"
+RUN python -c "import handler, ogg_codec, bounded_sonic, mcp_tools, system_prompt, memory_client"
 
 # Non-root user per AgentCore Runtime best practice.
 RUN useradd --create-home --shell /bin/bash appuser \
