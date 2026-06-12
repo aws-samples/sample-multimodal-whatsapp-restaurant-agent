@@ -759,13 +759,10 @@ elif should_deploy wa-runtime-voicenotes; then
     npx cdk deploy VoiceNotesStack \
       --require-approval never \
       $CDK_ROLLBACK_FLAG \
-      --context "agentcoreAzs=${AGENTCORE_AZS}" \
       --parameters "VoiceNotesStack:DeploymentPrefix=${PROJECT_PREFIX}" \
       --parameters "VoiceNotesStack:AgentCoreGatewayUrl=${GATEWAY_URL}" \
-      --parameters "VoiceNotesStack:MemoryArn=${MEMORY_ARN}" \
-      --parameters "VoiceNotesStack:VpcId=${VPC_ID}" \
-      --parameters "VoiceNotesStack:PrivateSubnetIds=${SUBNETS}" \
-      --parameters "VoiceNotesStack:AgentSecurityGroupId=${AGENT_SG}" \
+      --parameters "VoiceNotesStack:SharedMemoryArn=${MEMORY_ARN}" \
+      --parameters "VoiceNotesStack:AgentCoreAzIds=${AGENTCORE_AZS}" \
       --outputs-file "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-runtime-voicenotes.json"
   )
   update_state "wa-runtime-voicenotes" true "{\"prefix\":\"${PROJECT_PREFIX}\"}"
@@ -774,7 +771,7 @@ else
   print_info "wa-runtime-voicenotes already deployed; skipping"
 fi
 
-VOICENOTES_RUNTIME_ARN=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-runtime-voicenotes.json" "VoiceNotesStack" "AgentRuntimeArn")
+VOICENOTES_RUNTIME_ARN=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-runtime-voicenotes.json" "VoiceNotesStack" "VoiceNotesRuntimeArn")
 
 ################################################################################
 # Layer 7 - ChatAgentStack (wa-runtime-chat) - WhatsApp Chat Runtime.
