@@ -1,0 +1,11 @@
+# Single-shot-ICE interop spike dependencies (Task 14.1). Standalone - this is a
+# pre-implementation spike, not the deployed runtime. The runtime's own pinned
+# deps land with Task 16 (agent/requirements.txt).
+
+aiortc>=1.9.0       # WebRTC answerer (RTCPeerConnection, non-trickle ICE)
+av>=12.0.0          # PyAV transcode (pulled in by aiortc; explicit for clarity)
+boto3>=1.35.0       # KVS GetIceServerConfig (TURN credentials)
+
+# Test deps for the pure SDP-analysis tests.
+pytest>=8
+hypothesis>=6.100
