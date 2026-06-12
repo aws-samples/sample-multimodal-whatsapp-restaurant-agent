@@ -62,3 +62,53 @@ export async function invokeChat(payload: ChatPayload): Promise<ChatResult | nul
     return null;
   }
 }
+
+export interface VoiceNotePayload {
+  session_id: string;
+  customer_id: string;
+  audio_b64: string; // base64 Ogg Opus voice note
+}
+
+export interface VoiceNoteResult {
+  audio_b64?: string; // base64 Ogg Opus spoken reply (R7.5)
+  fallback_text?: string; // could-not-understand text (R7.6) when no audio
+  user_transcript?: string;
+  assistant_transcript?: string;
+  error?: string;
+}
+
+/** Invoke the VoiceNotes Runtime with the Ogg Opus voice note (Task 12.5,
+ *  R7.3). session_id == customer_id (R5.1). Returns the parsed JSON response
+ *  (audio reply or fallback) or null on an invoke-level failure. */
+export async function invokeVoiceNote(payload: VoiceNotePayload): Promise<VoiceNoteResult | null> {
+  const arn = process.env.VOICENOTES_RUNTIME_ARN;
+  if (!arn) {
+    console.error('VOICENOTES_RUNTIME_ARN not set; cannot invoke VoiceNotes Runtime');
+    return null;
+  }
+  const customerId = payload.customer_id || payload.session_id || '';
+  try {
+    const { BedrockAgentCoreClient, InvokeAgentRuntimeCommand } = await import(
+      '@aws-sdk/client-bedrock-agentcore'
+    );
+    const client = new BedrockAgentCoreClient({
+      region: process.env.AWS_REGION ?? 'us-east-1',
+    });
+    const resp = await client.send(
+      new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: arn,
+        runtimeSessionId: runtimeSessionId(customerId),
+        contentType: 'application/json',
+        accept: 'application/json',
+        payload: new TextEncoder().encode(JSON.stringify(payload)),
+      }),
+    );
+    const body = resp.response;
+    if (!body) return null;
+    const text = await (body as { transformToString(): Promise<string> }).transformToString();
+    return text ? (JSON.parse(text) as VoiceNoteResult) : null;
+  } catch (err) {
+    console.warn(`VoiceNotes Runtime invoke failed for ${customerId}: ${String(err)}`);
+    return null;
+  }
+}

@@ -224,3 +224,92 @@ export async function sendText(
   emitDeliveryFailure(channel, customerId, `status_${r.outcome?.last.status}`);
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Voice reply (Task 12.5, R7.5): send the VoiceNotes Runtime's Ogg Opus output
+// back to the customer as a WhatsApp AUDIO (voice) message. This is a two-step
+// flow: upload the Ogg bytes to the Media API to get a media id, then send a
+// `type: audio` message referencing it. A voice note reply is always within the
+// 24-hour window (the inbound note just opened it), so there is no Utility
+// template fallback - if the audio send fails, the caller falls back to a
+// could-not-understand TEXT message (which has its own window routing).
+// ---------------------------------------------------------------------------
+
+/** Upload Ogg Opus bytes to the Media API and return the media id, or null on
+ *  any failure/timeout. The token is never logged. */
+async function uploadAudioMedia(
+  phoneNumberId: string,
+  token: string,
+  ogg: Buffer,
+): Promise<string | null> {
+  const url = `${GRAPH_BASE}/${phoneNumberId}/media`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', 'audio/ogg');
+    form.append('file', new Blob([ogg], { type: 'audio/ogg; codecs=opus' }), 'reply.ogg');
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }, // fetch sets the multipart boundary
+      body: form,
+      signal: controller.signal,
+    });
+    if (!resp.ok) return null;
+    const body = (await resp.json()) as { id?: string };
+    return body?.id ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function audioPayload(recipient: string, mediaId: string) {
+  return {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: recipient,
+    type: 'audio',
+    audio: { id: mediaId },
+  };
+}
+
+/** Send an Ogg Opus voice reply (R7.5). Uploads the bytes, then sends a
+ *  type:audio message with retry per R12. Returns true on a 2xx send. Never
+ *  throws; logs by Customer_Id (never the recipient). */
+export async function sendAudio(
+  recipient: string,
+  ogg: Buffer,
+  token: string,
+  customerId = '',
+  channel = 'voicenote',
+): Promise<boolean> {
+  const phoneNumberId = process.env.PHONE_NUMBER_ID;
+  if (!phoneNumberId || !token) {
+    console.error(`cannot send audio: missing PHONE_NUMBER_ID or token (customer ${customerId})`);
+    emitDeliveryFailure(channel, customerId, 'token_or_config_unavailable');
+    return false;
+  }
+  const mediaId = await uploadAudioMedia(phoneNumberId, token, ogg);
+  if (!mediaId) {
+    console.warn(`audio media upload failed for ${customerId}`);
+    emitDeliveryFailure(channel, customerId, 'audio_upload_failed');
+    return false;
+  }
+  const outcome = await sendWithRetry(() =>
+    postMessage(phoneNumberId, token, audioPayload(recipient, mediaId)),
+  );
+  if (outcome.ok) {
+    emitDeliverySuccess(channel, customerId);
+    return true;
+  }
+  console.warn(
+    `audio reply delivery failed for ${customerId} after ${outcome.attempts} attempt(s): ` +
+      `status=${outcome.last.status} code=${outcome.last.errorCode ?? '-'} ` +
+      `detail=${outcome.last.errorMessage ?? '-'}`,
+  );
+  emitDeliveryFailure(channel, customerId, `status_${outcome.last.status}`);
+  return false;
+}

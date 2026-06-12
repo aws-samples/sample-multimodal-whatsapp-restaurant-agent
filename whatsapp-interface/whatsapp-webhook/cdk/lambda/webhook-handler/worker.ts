@@ -15,6 +15,7 @@
 import { ROUTE_CHAT, ROUTE_VOICENOTE, normalizeMessage, routeOf } from './lib/dispatch.js';
 import type { RawEvent } from './lib/dispatch.js';
 import { handleChatMessage } from './lib/textHandler.js';
+import { handleVoiceNote } from './lib/audioHandler.js';
 
 let accessTokenCache: string | undefined;
 
@@ -60,8 +61,8 @@ async function processRecord(record: any, accessToken: string): Promise<void> {
     if (!accessToken) throw new Error('access token unavailable; cannot serve chat message');
     await handleChatMessage(msg, accessToken);
   } else if (route === ROUTE_VOICENOTE) {
-    console.info('audio message received; VoiceNotes Runtime is Task 12');
-    // TODO(Task 12): download OGG, invoke the VoiceNotes Runtime, reply audio.
+    if (!accessToken) throw new Error('access token unavailable; cannot serve voice note');
+    await handleVoiceNote(msg, accessToken);
   } else {
     console.debug(`ignoring message of type ${msg.msgType}`);
   }

@@ -1,14 +1,8 @@
-"""WhatsApp VoiceNotes Runtime - invoke entrypoint (PLACEHOLDER for Task 12.1).
+"""WhatsApp VoiceNotes Runtime - invoke entrypoint (Task 12.4).
 
-This is a minimal FastAPI surface so the CDK stack (Task 12.1) has a coherent
-container build context and the Docker import smoke test passes. The real
-implementation lands in:
-
-  - Task 12.2  agent/ogg_codec.py     (Ogg Opus <-> 16/24 kHz PCM)
-  - Task 12.3  agent/bounded_sonic.py (bounded Nova 2 Sonic speech-to-speech)
-  - Task 12.4  agent/handler.py        (this file: wire codec + bounded_sonic,
-                                        Ogg Opus bytes + session_id in, Ogg Opus
-                                        bytes out)
+Wires the Ogg Opus codec (Task 12.2) and the bounded Nova 2 Sonic session
+(Task 12.3) into the AgentCore Runtime request/response surface: Ogg Opus bytes
+in, Ogg Opus bytes out (voice-in / voice-out, R7.3 / R7.4 / R7.5).
 
 Invoke contract (the webhook worker - Task 12.5 - builds this payload):
 
@@ -19,29 +13,84 @@ Invoke contract (the webhook worker - Task 12.5 - builds this payload):
       "audio_b64":   "<base64 Ogg Opus bytes>"
     }
 
-    200 -> { "audio_b64": "<base64 Ogg Opus reply>" }   # voice-in / voice-out
-        or { "error": "...", "fallback_text": "..." }   # no usable audio (R7.6)
+    200 (voice reply) -> { "audio_b64": "<base64 Ogg Opus reply>",
+                           "user_transcript": "...",
+                           "assistant_transcript": "..." }
 
-Heavy deps (fastapi) are guarded so a bare `python -c "import handler"` smoke
-test in the Docker build works even before the web framework is installed.
+    200 (no usable audio, R7.6) -> { "fallback_text": "<could-not-understand>" }
+
+When the bounded session yields no usable audio - the note could not be decoded,
+the model produced nothing, or the session failed - the runtime returns a
+``fallback_text`` (and no ``audio_b64``) so the worker sends the
+could-not-understand TEXT message instead of a voice reply (R7.6). The path
+never returns a text reply for a voice note that DID produce audio.
+
+Heavy deps (fastapi, strands, av) are imported lazily / guarded so a bare
+``python -c "import handler"`` smoke test in the Docker build works without them.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
 
+import bounded_sonic
+import ogg_codec
+
 logger = logging.getLogger(__name__)
 
+# Could-not-understand fallback text (R7.6). The worker sends this as a normal
+# WhatsApp text message when no usable audio reply is produced.
+COULD_NOT_UNDERSTAND = (
+    "Sorry, I could not understand that voice note. Please try again, or send "
+    "your order as a text message."
+)
 
-def run_voice_note_turn(payload: dict) -> dict:
-    """PLACEHOLDER (Task 12.4). Returns a not-implemented marker for now."""
+
+async def run_voice_note_turn(payload: dict) -> dict:
+    """Run one bounded voice-note turn end to end (Ogg in -> Ogg out).
+
+    Returns a dict with either ``audio_b64`` (a spoken Ogg Opus reply) or
+    ``fallback_text`` (the could-not-understand message, R7.6). Never raises:
+    any failure degrades to the text fallback so the worker always has a reply."""
     customer_id = (payload.get("customer_id") or payload.get("session_id") or "").strip()
     if not customer_id:
         return {"error": "missing_customer_id"}
-    return {
-        "error": "not_implemented",
-        "fallback_text": "Voice notes are not available yet.",
-    }
+
+    audio_b64 = payload.get("audio_b64") or ""
+    if not audio_b64:
+        return {"fallback_text": COULD_NOT_UNDERSTAND}
+
+    # --- decode the inbound Ogg Opus voice note to 16 kHz PCM (R7.4 in) ---
+    try:
+        ogg_bytes = base64.b64decode(audio_b64, validate=True)
+        input_pcm = ogg_codec.decode_ogg_opus_to_pcm(ogg_bytes)
+    except (ValueError, ogg_codec.OggDecodeError) as exc:
+        logger.info("voice-note decode failed for %s: %s", customer_id, exc)
+        return {"fallback_text": COULD_NOT_UNDERSTAND}
+
+    # --- bounded Nova 2 Sonic speech-to-speech turn (reads/writes memory) ---
+    result = await bounded_sonic.run_bounded_session(customer_id, input_pcm)
+    if not result.has_audio:
+        logger.info(
+            "voice-note produced no usable audio for %s (ok=%s, err=%s)",
+            customer_id, result.ok, result.error,
+        )
+        return {"fallback_text": COULD_NOT_UNDERSTAND}
+
+    # --- encode the 24 kHz spoken reply back to Ogg Opus (R7.4 out) ---
+    try:
+        reply_ogg = ogg_codec.encode_pcm_to_ogg_opus(result.output_pcm)
+    except ogg_codec.OggEncodeError as exc:
+        logger.warning("voice-note reply encode failed for %s: %s", customer_id, exc)
+        return {"fallback_text": COULD_NOT_UNDERSTAND}
+
+    out = {"audio_b64": base64.b64encode(reply_ogg).decode("ascii")}
+    if result.user_transcript:
+        out["user_transcript"] = result.user_transcript
+    if result.assistant_transcript:
+        out["assistant_transcript"] = result.assistant_transcript
+    return out
 
 
 # --- AgentCore Runtime HTTP surface -----------------------------------------
@@ -57,13 +106,13 @@ try:
 
     @app.post("/invocations")
     async def invocations(request: Request) -> dict:
-        """AgentCore Runtime invocation endpoint (PLACEHOLDER until Task 12.4)."""
+        """AgentCore Runtime invocation endpoint: Ogg Opus in, Ogg Opus out."""
         payload = await request.json()
         try:
-            return run_voice_note_turn(payload)
+            return await run_voice_note_turn(payload)
         except Exception as exc:  # noqa: BLE001 - never leak a stack trace
             logger.exception("voice-note turn failed")
-            return {"error": "voice_note_turn_failed", "detail": str(exc)}
+            return {"error": "voice_note_turn_failed", "fallback_text": COULD_NOT_UNDERSTAND, "detail": str(exc)}
 
 except ImportError:  # pragma: no cover - smoke-test path without web deps
     app = None  # type: ignore[assignment]
