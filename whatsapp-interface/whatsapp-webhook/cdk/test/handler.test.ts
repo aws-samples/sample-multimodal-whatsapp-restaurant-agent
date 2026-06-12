@@ -36,6 +36,7 @@ import {
   ORDER_STATUSES,
   type OrderConfirmation,
 } from '../lambda/webhook-handler/lib/orderConfirmation';
+import { chooseVoiceReply, COULD_NOT_UNDERSTAND, COULD_NOT_DOWNLOAD } from '../lambda/webhook-handler/lib/audioHandler';
 
 const RUNS = { numRuns: 100 };
 
@@ -348,5 +349,70 @@ describe('Property 14: Order-confirmation rendering', () => {
     expect(ok).toBe(false);
     expect(order).toEqual(snapshot); // unmodified
     if (prev !== undefined) process.env.PHONE_NUMBER_ID = prev;
+  });
+});
+
+// VoiceNotes reply selection (Task 12.5 / 12.7, R7.6 / R7.7 / R7.8). The pure
+// decision that routes the voice-note path to an audio reply or a text
+// fallback. The live download / invoke / send and the Sonic round-trip are
+// covered by the agent's Hypothesis Property 22 and the Task 12.8 integration
+// test; here we lock the routing invariant.
+describe('VoiceNotes reply selection (R7.6/R7.7/R7.8)', () => {
+  test('missing media -> could-not-download text (R7.7/R7.8)', () => {
+    const r = chooseVoiceReply({ hasMedia: false, downloaded: false, invoke: null });
+    expect(r).toEqual({ kind: 'text', text: COULD_NOT_DOWNLOAD, reason: 'no_media' });
+  });
+
+  test('download failed -> could-not-download text (R7.7/R7.8)', () => {
+    const r = chooseVoiceReply({ hasMedia: true, downloaded: false, invoke: null });
+    expect(r).toEqual({ kind: 'text', text: COULD_NOT_DOWNLOAD, reason: 'download_failed' });
+  });
+
+  test('no audio from runtime -> could-not-understand text (R7.6)', () => {
+    const r = chooseVoiceReply({ hasMedia: true, downloaded: true, invoke: {} });
+    expect(r).toEqual({ kind: 'text', text: COULD_NOT_UNDERSTAND, reason: 'no_audio' });
+  });
+
+  test('runtime fallback_text is preferred over the default (R7.6)', () => {
+    const r = chooseVoiceReply({
+      hasMedia: true,
+      downloaded: true,
+      invoke: { fallback_text: 'please repeat that' },
+    });
+    expect(r).toEqual({ kind: 'text', text: 'please repeat that', reason: 'no_audio' });
+  });
+
+  test('runtime audio -> audio reply (R7.5), never text', () => {
+    const r = chooseVoiceReply({
+      hasMedia: true,
+      downloaded: true,
+      invoke: { audio_b64: 'T2dnUw==' },
+    });
+    expect(r).toEqual({ kind: 'audio', oggB64: 'T2dnUw==' });
+  });
+
+  test('Property: audio reply iff downloaded AND runtime returned audio_b64', () => {
+    fc.assert(
+      fc.property(
+        fc.boolean(),
+        fc.boolean(),
+        fc.option(fc.string({ minLength: 1, maxLength: 32 }), { nil: undefined }),
+        fc.option(fc.string({ minLength: 1, maxLength: 32 }), { nil: undefined }),
+        (hasMedia, downloaded, audioB64, fallbackText) => {
+          const invoke =
+            audioB64 === undefined && fallbackText === undefined
+              ? null
+              : { audio_b64: audioB64, fallback_text: fallbackText };
+          const r = chooseVoiceReply({ hasMedia, downloaded, invoke });
+          const shouldBeAudio = hasMedia && downloaded && audioB64 !== undefined;
+          if (shouldBeAudio) {
+            expect(r.kind).toBe('audio');
+          } else {
+            expect(r.kind).toBe('text');
+          }
+        },
+      ),
+      RUNS,
+    );
   });
 });

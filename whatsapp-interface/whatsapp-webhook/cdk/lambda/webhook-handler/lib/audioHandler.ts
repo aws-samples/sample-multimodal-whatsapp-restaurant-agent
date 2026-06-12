@@ -22,17 +22,48 @@ import type { InboundMessage } from './dispatch.js';
 import { ROUTE_VOICENOTE, routeOf } from './dispatch.js';
 import { downloadVoiceNote } from './mediaApi.js';
 import { invokeVoiceNote } from './runtimeClient.js';
+import type { VoiceNoteResult } from './runtimeClient.js';
 import { sendAudio, sendText } from './whatsappClient.js';
 import { updateInbound } from './windowTable.js';
 
 const CHANNEL = 'voicenote';
 
 // R7.6: the model could not understand / produced no usable audio.
-const COULD_NOT_UNDERSTAND =
+export const COULD_NOT_UNDERSTAND =
   'Sorry, I could not understand that voice note. Please try again, or send your order as a text message.';
 // R7.7/R7.8: we could not fetch the note's audio at all.
-const COULD_NOT_DOWNLOAD =
+export const COULD_NOT_DOWNLOAD =
   'Sorry, I could not get that voice note. Please resend it, or send your order as a text message.';
+
+/** The reply the voice-note path should produce: a voice (audio) message, or a
+ *  text fallback with a reason. */
+export type VoiceReply =
+  | { kind: 'audio'; oggB64: string }
+  | { kind: 'text'; text: string; reason: string };
+
+/** Pure reply-selection (Task 12.5 / 12.7, R7.6/R7.7/R7.8): given whether the
+ *  note had media, whether the download succeeded, and the runtime's invoke
+ *  result, decide the reply. Audio iff the runtime returned audio bytes;
+ *  otherwise a text fallback (download message when the note could not be
+ *  fetched, could-not-understand or the runtime's fallback otherwise). Never
+ *  returns audio for a missing/failed download or an empty invoke result. */
+export function chooseVoiceReply(input: {
+  hasMedia: boolean;
+  downloaded: boolean;
+  invoke: VoiceNoteResult | null;
+}): VoiceReply {
+  if (!input.hasMedia) return { kind: 'text', text: COULD_NOT_DOWNLOAD, reason: 'no_media' };
+  if (!input.downloaded) return { kind: 'text', text: COULD_NOT_DOWNLOAD, reason: 'download_failed' };
+  const inv = input.invoke;
+  if (!inv || !inv.audio_b64) {
+    return {
+      kind: 'text',
+      text: (inv && inv.fallback_text) || COULD_NOT_UNDERSTAND,
+      reason: 'no_audio',
+    };
+  }
+  return { kind: 'audio', oggB64: inv.audio_b64 };
+}
 
 export interface HandleResult {
   status: string;
@@ -74,35 +105,27 @@ export async function handleVoiceNote(
   }
 
   // 3. Download the Ogg Opus voice note (R7.1/R7.2). Any failure/oversize ->
-  //    discard and ask for a resend or text (R7.7/R7.8).
-  if (!msg.mediaId) {
-    await sendText(msg.sender, COULD_NOT_DOWNLOAD, accessToken, customerId, CHANNEL);
-    return { status: 'no_media', customerId };
-  }
-  const ogg = await downloadVoiceNote(msg.mediaId, accessToken);
-  if (!ogg) {
-    await sendText(msg.sender, COULD_NOT_DOWNLOAD, accessToken, customerId, CHANNEL);
-    return { status: 'download_failed', customerId };
-  }
+  //    null (R7.7/R7.8). 4. Invoke the VoiceNotes Runtime only if we have audio
+  //    (R7.3): Ogg in, Ogg out, session = customer (R5.1).
+  const ogg = msg.mediaId ? await downloadVoiceNote(msg.mediaId, accessToken) : null;
+  const invoke = ogg
+    ? await invokeVoiceNote({
+        session_id: customerId, // R5.1
+        customer_id: customerId,
+        audio_b64: ogg.toString('base64'),
+      })
+    : null;
 
-  // 4. Invoke the VoiceNotes Runtime (R7.3): Ogg in, Ogg out. session=customer.
-  const result = await invokeVoiceNote({
-    session_id: customerId, // R5.1
-    customer_id: customerId,
-    audio_b64: ogg.toString('base64'),
-  });
-
-  // 5a. No usable audio reply (R7.6): send the runtime's fallback text, or our
-  //     default could-not-understand message.
-  if (!result || !result.audio_b64) {
-    const fallback = (result && result.fallback_text) || COULD_NOT_UNDERSTAND;
-    await sendText(msg.sender, fallback, accessToken, customerId, CHANNEL);
-    return { status: 'no_audio', customerId };
+  // 5. Decide the reply (pure): audio reply, or a text fallback (R7.6/R7.7/R7.8).
+  const reply = chooseVoiceReply({ hasMedia: !!msg.mediaId, downloaded: !!ogg, invoke });
+  if (reply.kind === 'text') {
+    await sendText(msg.sender, reply.text, accessToken, customerId, CHANNEL);
+    return { status: reply.reason, customerId };
   }
 
-  // 5b. Voice reply (R7.5): send the Ogg Opus as a WhatsApp audio message; on a
-  //     send failure fall back to the could-not-understand text.
-  const replyOgg = Buffer.from(result.audio_b64, 'base64');
+  // 6. Voice reply (R7.5): send the Ogg Opus as a WhatsApp audio message; on a
+  //    send failure fall back to the could-not-understand text.
+  const replyOgg = Buffer.from(reply.oggB64, 'base64');
   const sent = await sendAudio(msg.sender, replyOgg, accessToken, customerId, CHANNEL);
   if (!sent) {
     await sendText(msg.sender, COULD_NOT_UNDERSTAND, accessToken, customerId, CHANNEL);
