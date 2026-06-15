@@ -21,6 +21,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { input, password, select, confirm } from '@inquirer/prompts';
@@ -38,6 +39,7 @@ import {
   renderConfigEnv,
   parseConfigEnv,
   appAccessToken,
+  metaConsoleUrls,
 } from './lib/pure.mjs';
 import * as graph from './lib/graph.mjs';
 import { makeClient, checkSecretsExist, putSecret, getSecret } from './lib/secrets.mjs';
@@ -52,6 +54,32 @@ function log(msg = '') {
 }
 function section(title) {
   log(`\n=== ${title} ===`);
+}
+
+// Best-effort: open a URL in the operator's default browser. Cross-platform,
+// detached, and never throws - if it fails the URL is still printed so the
+// operator can click/paste it. Used only in interactive mode when the operator
+// opts in.
+function openUrl(url) {
+  try {
+    const platform = process.platform;
+    const cmd = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
+    const args = platform === 'win32' ? ['/c', 'start', '', url] : [url];
+    const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    /* best-effort: the URL is printed regardless */
+  }
+}
+
+// Print a "where to get this" URL right before the matching prompt and, when the
+// operator opted in, open it in the browser. `show` gates it (we skip when the
+// value already came from an env var, so there is nothing to go fetch).
+function maybeShowUrl(show, openUrls, label, url) {
+  if (!show || !url) return;
+  log(`\n${label}:\n  ${url}`);
+  if (openUrls) openUrl(url);
 }
 
 // --- environment-variable fallbacks -----------------------------------------
@@ -133,11 +161,42 @@ async function preDeploy() {
   log('via `export` so they stay out of shell history). The app itself must be');
   log('created in the console first - no API can do that.\n');
 
+  // Optional Business (portfolio) ID - not required, but when supplied it makes
+  // the Meta console links below land directly on the right business.
+  const businessId = envOr('WHATSAPP_BUSINESS_ID');
+
+  // Offer to open the relevant Meta console page in the browser right before
+  // each value is needed, so the operator is never hunting the dashboard blind.
+  let openUrls = false;
+  if (!NON_INTERACTIVE) {
+    openUrls = await confirm({
+      message: 'Open the relevant Meta dashboard pages in your browser as we go?',
+      default: true,
+    });
+  }
+
+  // Create / find your app (no app id needed yet).
+  maybeShowUrl(
+    !NON_INTERACTIVE && !envOr('WHATSAPP_APP_ID'),
+    openUrls,
+    'Create or find your Meta app here',
+    metaConsoleUrls({ businessId }).apps,
+  );
   const appId = await valueFrom('WHATSAPP_APP_ID', 'App ID', () =>
     input({
       message: 'App ID (Meta App Dashboard -> App Settings -> Basic -> "App ID"):',
       validate: (v) => /^\d+$/.test(v.trim()) || 'App ID is numeric',
     }),
+  );
+
+  // Now that the App ID is known, build the app-specific console links.
+  const urls = metaConsoleUrls({ appId, businessId });
+
+  maybeShowUrl(
+    !NON_INTERACTIVE && !envOr('WHATSAPP_APP_SECRET'),
+    openUrls,
+    'App Secret is on the App Dashboard (Settings -> Basic -> App Secret -> Show)',
+    urls.appDashboard,
   );
   const appSecret = await valueFrom('WHATSAPP_APP_SECRET', 'App Secret', () =>
     password({
@@ -146,13 +205,19 @@ async function preDeploy() {
       mask: '*',
     }),
   );
-  const token = await valueFrom('WHATSAPP_ACCESS_TOKEN', 'access token', () =>
-    password({
+  const token = await valueFrom('WHATSAPP_ACCESS_TOKEN', 'access token', () => {
+    maybeShowUrl(
+      !NON_INTERACTIVE,
+      openUrls,
+      'Access token is under WhatsApp -> API Setup (temporary 24h token, or generate a System User token)',
+      urls.whatsappApiSetup,
+    );
+    return password({
       message:
         'Access token (Meta App Dashboard -> WhatsApp -> API Setup: the temporary 24h token, OR a long-lived System User token). Used to send messages + call the Graph API:',
       mask: '*',
-    }),
-  );
+    });
+  });
 
   // Validate the token.
   section('Validating token against the Graph API');

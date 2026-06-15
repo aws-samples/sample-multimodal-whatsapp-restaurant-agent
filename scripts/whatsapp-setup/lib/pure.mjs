@@ -144,7 +144,26 @@ export function appAccessToken(appId, appSecret) {
   return `${appId}|${appSecret}`;
 }
 
-// Parse a dotenv-style block (the inverse of renderConfigEnv) into a plain
+// Build the Meta dashboard URLs that help an operator find each value, given
+// what we know so far. Pure: the app-specific links are only produced once the
+// App ID is known, and business_id is appended only when supplied (it makes the
+// links land more directly but is optional). The CLI prints these (and can open
+// them) right before the matching prompt, so the operator is never hunting the
+// console blind.
+export function metaConsoleUrls({ appId, businessId } = {}) {
+  const apps = 'https://developers.facebook.com/apps/';
+  let appDashboard = '';
+  let whatsappApiSetup = '';
+  if (appId) {
+    const bizQ = businessId ? `?business_id=${businessId}` : '';
+    appDashboard = `https://developers.facebook.com/apps/${appId}/dashboard/${bizQ}`;
+    const base =
+      `https://developers.facebook.com/apps/${appId}/use_cases/customize/wa-dev-console/` +
+      '?use_case_enum=WHATSAPP_BUSINESS_MESSAGING&selected_tab=wa-dev-console&product_route=whatsapp-business';
+    whatsappApiSetup = businessId ? `${base}&business_id=${businessId}` : base;
+  }
+  return { apps, appDashboard, whatsappApiSetup };
+}
 // object. Blank lines and `#` comments are ignored; only the first `=` splits a
 // line (values may contain `=`). Pure, so the post-deploy auto-load is testable
 // without touching the filesystem.

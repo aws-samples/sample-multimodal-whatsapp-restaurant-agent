@@ -21,6 +21,7 @@ import {
   renderConfigEnv,
   parseConfigEnv,
   appAccessToken,
+  metaConsoleUrls,
 } from '../lib/pure.mjs';
 
 test('secret names are deterministic and prefixed (match the webhook stack)', () => {
@@ -158,4 +159,25 @@ test('parseConfigEnv tolerates empty / undefined input', () => {
 
 test('appAccessToken builds the app_id|app_secret app token (for /subscriptions)', () => {
   assert.equal(appAccessToken('123', 'abc'), '123|abc');
+});
+
+test('metaConsoleUrls builds app + WhatsApp links and includes business_id when known', () => {
+  const u = metaConsoleUrls({ appId: '123', businessId: '456' });
+  assert.equal(u.apps, 'https://developers.facebook.com/apps/');
+  assert.ok(u.appDashboard.startsWith('https://developers.facebook.com/apps/123/dashboard/'));
+  assert.ok(u.appDashboard.includes('business_id=456'));
+  assert.ok(u.whatsappApiSetup.includes('/apps/123/use_cases/customize/wa-dev-console/'));
+  assert.ok(u.whatsappApiSetup.includes('use_case_enum=WHATSAPP_BUSINESS_MESSAGING'));
+  assert.ok(u.whatsappApiSetup.includes('business_id=456'));
+});
+
+test('metaConsoleUrls omits app-specific links without appId and business_id when unknown', () => {
+  const none = metaConsoleUrls({});
+  assert.equal(none.appDashboard, '');
+  assert.equal(none.whatsappApiSetup, '');
+  assert.equal(none.apps, 'https://developers.facebook.com/apps/');
+
+  const noBiz = metaConsoleUrls({ appId: '123' });
+  assert.equal(noBiz.appDashboard, 'https://developers.facebook.com/apps/123/dashboard/');
+  assert.ok(!noBiz.whatsappApiSetup.includes('business_id'));
 });
