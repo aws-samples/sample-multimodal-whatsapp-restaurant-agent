@@ -50,10 +50,18 @@ export class MemoryStack extends cdk.Stack {
     const prefix = deploymentPrefix.valueAsString;
 
     // Physical memory name. AgentCore appends a 10-char suffix to form the id
-    // (Name-XXXXXXXXXX). Name pattern allows [a-zA-Z][a-zA-Z0-9-_]*, so the
-    // hyphenated prefix is valid. Fn::Sub resolves the prefix token to a literal
-    // at deploy time before the service validates the name.
-    const memoryName = cdk.Fn.sub('${P}-wa-shared-memory', { P: prefix });
+    // (Name-XXXXXXXXXX). The Name property pattern is STRICT:
+    // ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ - underscores allowed but NOT hyphens, max
+    // 48 chars. The deployment prefix arrives as a CfnParameter (a token) that
+    // may contain hyphens (default "qsr-wa"), and a token cannot be
+    // sanitized at synth time, so the prefix CANNOT be interpolated into this
+    // name. We therefore use a FIXED underscore name - the same approach the
+    // runtime stacks use for AgentRuntimeName (also no-hyphen). The deployment
+    // prefix still scopes every OTHER resource (the execution role, the stack
+    // name) and is applied as a tag below for tenant observability; the unique
+    // memory id (Name + service suffix) keeps deploys from colliding on the id.
+    const memoryName = 'whatsapp_shared_memory';
+
 
     // ----------------- Memory execution role -----------------
     // The role AgentCore Memory assumes to run the async extraction/

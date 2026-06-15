@@ -14,12 +14,14 @@ WORKDIR /app
 RUN pip install --upgrade pip
 
 # System deps: curl for the HEALTHCHECK, build tooling for transitive native
-# pip deps. Tasks 12.2-12.4 add ffmpeg/libopus headers (PyAV) here.
+# pip deps, and git (pip installs mcp-proxy-for-aws from a git+https URL, which
+# requires git on PATH). Tasks 12.2-12.4 add ffmpeg/libopus headers (PyAV) here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     make \
     curl \
+    git \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
