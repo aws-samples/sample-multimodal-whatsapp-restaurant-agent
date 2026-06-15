@@ -12,6 +12,7 @@
 import {
   SecretsManagerClient,
   PutSecretValueCommand,
+  GetSecretValueCommand,
   DescribeSecretCommand,
 } from '@aws-sdk/client-secrets-manager';
 
@@ -44,4 +45,19 @@ export async function putSecret(client, secretId, value) {
     new PutSecretValueCommand({ SecretId: secretId, SecretString: value }),
   );
   return out.VersionId;
+}
+
+// Read a secret value from an existing container. Returns the string value, or
+// '' when the secret is missing or empty (so the caller can fall back to an env
+// var / prompt). NEVER logs the value. Used by the post-deploy flow to pull the
+// Verify Token + Access Token that pre-deploy already stored, so the operator
+// never has to re-enter them.
+export async function getSecret(client, secretId) {
+  try {
+    const out = await client.send(new GetSecretValueCommand({ SecretId: secretId }));
+    return out.SecretString ?? '';
+  } catch (err) {
+    if (err && err.name === 'ResourceNotFoundException') return '';
+    throw err;
+  }
 }

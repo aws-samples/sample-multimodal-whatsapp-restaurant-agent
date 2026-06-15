@@ -19,6 +19,8 @@ import {
   isAppSubscriptionConfigured,
   renderDeployCommand,
   renderConfigEnv,
+  parseConfigEnv,
+  appAccessToken,
 } from '../lib/pure.mjs';
 
 test('secret names are deterministic and prefixed (match the webhook stack)', () => {
@@ -131,4 +133,29 @@ test('renderDeployCommand + renderConfigEnv contain only non-secret config', () 
   assert.match(env, /WHATSAPP_PHONE_NUMBER_ID=111/);
   // No secret-bearing keys in the rendered config.
   assert.ok(!/TOKEN=|SECRET=/.test(env));
+});
+
+test('parseConfigEnv round-trips renderConfigEnv (post-deploy auto-load)', () => {
+  const cfg = { prefix: 'qsr-wa', phoneNumberId: '111', wabaId: '222', appId: '333' };
+  const parsed = parseConfigEnv(renderConfigEnv(cfg));
+  assert.equal(parsed.WHATSAPP_DEPLOYMENT_PREFIX, 'qsr-wa');
+  assert.equal(parsed.WHATSAPP_PHONE_NUMBER_ID, '111');
+  assert.equal(parsed.WHATSAPP_WABA_ID, '222');
+  assert.equal(parsed.WHATSAPP_APP_ID, '333');
+});
+
+test('parseConfigEnv ignores comments/blanks and keeps "=" in values', () => {
+  const parsed = parseConfigEnv('# comment\n\nWHATSAPP_APP_ID=42\nFOO=a=b=c\n');
+  assert.equal(parsed.WHATSAPP_APP_ID, '42');
+  assert.equal(parsed.FOO, 'a=b=c');
+  assert.equal('# comment' in parsed, false);
+});
+
+test('parseConfigEnv tolerates empty / undefined input', () => {
+  assert.deepEqual(parseConfigEnv(''), {});
+  assert.deepEqual(parseConfigEnv(undefined), {});
+});
+
+test('appAccessToken builds the app_id|app_secret app token (for /subscriptions)', () => {
+  assert.equal(appAccessToken('123', 'abc'), '123|abc');
 });

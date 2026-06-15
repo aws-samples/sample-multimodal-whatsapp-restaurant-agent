@@ -15,7 +15,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@aws-sdk/client-secrets-manager": "3.717.0",
-    "@inquirer/prompts": "7.2.1"
+    "@aws-sdk/client-secrets-manager": "^3",
+    "@inquirer/prompts": "^7"
   }
 }

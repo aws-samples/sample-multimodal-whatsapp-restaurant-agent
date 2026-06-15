@@ -135,3 +135,27 @@ export function renderConfigEnv({ prefix, phoneNumberId, wabaId, appId }) {
     '',
   ].join('\n');
 }
+
+// Build a Meta APP access token from the app id + app secret: "app_id|app_secret".
+// The app-level Graph endpoints (notably POST /{app-id}/subscriptions) reject a
+// user / System User token with error code 15 and require this app token. It is
+// only ever sent in the Authorization header, never logged.
+export function appAccessToken(appId, appSecret) {
+  return `${appId}|${appSecret}`;
+}
+
+// Parse a dotenv-style block (the inverse of renderConfigEnv) into a plain
+// object. Blank lines and `#` comments are ignored; only the first `=` splits a
+// line (values may contain `=`). Pure, so the post-deploy auto-load is testable
+// without touching the filesystem.
+export function parseConfigEnv(text) {
+  const out = {};
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const i = t.indexOf('=');
+    if (i <= 0) continue;
+    out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+  }
+  return out;
+}

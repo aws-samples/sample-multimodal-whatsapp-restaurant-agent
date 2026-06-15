@@ -36,9 +36,11 @@ import {
   isAppSubscriptionConfigured,
   renderDeployCommand,
   renderConfigEnv,
+  parseConfigEnv,
+  appAccessToken,
 } from './lib/pure.mjs';
 import * as graph from './lib/graph.mjs';
-import { makeClient, checkSecretsExist, putSecret } from './lib/secrets.mjs';
+import { makeClient, checkSecretsExist, putSecret, getSecret } from './lib/secrets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // repo root is two levels up from scripts/whatsapp-setup/
@@ -81,6 +83,38 @@ async function valueFrom(name, label, promptFn) {
   return promptFn();
 }
 
+// Resolve a value with a config-env fallback layer: env var -> the value read
+// from .deploy-tmp/whatsapp-config.env -> interactive prompt (or fail in
+// non-interactive mode). Used by post-deploy so it never re-asks for values
+// pre-deploy already captured. Logs only the SOURCE, never the value.
+async function resolveValue(envName, cfgValue, label, promptFn) {
+  const fromEnv = envOr(envName);
+  if (fromEnv) {
+    log(`Using ${label} from $${envName}.`);
+    return fromEnv;
+  }
+  if (cfgValue && String(cfgValue).trim()) {
+    log(`Using ${label} from .deploy-tmp/whatsapp-config.env.`);
+    return String(cfgValue).trim();
+  }
+  if (NON_INTERACTIVE) {
+    throw new Error(`${envName} is required in non-interactive mode (${label}).`);
+  }
+  return promptFn();
+}
+
+// Load the non-secret config env file pre-deploy writes (App ID / WABA ID /
+// prefix / phone number id). Returns {} when it does not exist yet.
+async function loadConfigEnv() {
+  const p = path.join(REPO_ROOT, '.deploy-tmp', 'whatsapp-config.env');
+  if (!existsSync(p)) return {};
+  try {
+    return parseConfigEnv(await readFile(p, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
 async function promptPrefix() {
   return valueFrom('WHATSAPP_DEPLOYMENT_PREFIX', 'deployment prefix', () =>
     input({
@@ -101,15 +135,23 @@ async function preDeploy() {
 
   const appId = await valueFrom('WHATSAPP_APP_ID', 'App ID', () =>
     input({
-      message: 'App ID (App Dashboard -> Settings -> Basic):',
+      message: 'App ID (Meta App Dashboard -> App Settings -> Basic -> "App ID"):',
       validate: (v) => /^\d+$/.test(v.trim()) || 'App ID is numeric',
     }),
   );
   const appSecret = await valueFrom('WHATSAPP_APP_SECRET', 'App Secret', () =>
-    password({ message: 'App Secret (Settings -> Basic -> App Secret):', mask: '*' }),
+    password({
+      message:
+        'App Secret (Meta App Dashboard -> App Settings -> Basic -> "App Secret" -> Show). NOT the access token. Used to verify webhook signatures:',
+      mask: '*',
+    }),
   );
   const token = await valueFrom('WHATSAPP_ACCESS_TOKEN', 'access token', () =>
-    password({ message: 'Access token (temporary 24h, or System User token):', mask: '*' }),
+    password({
+      message:
+        'Access token (Meta App Dashboard -> WhatsApp -> API Setup: the temporary 24h token, OR a long-lived System User token). Used to send messages + call the Graph API:',
+      mask: '*',
+    }),
   );
 
   // Validate the token.
@@ -199,7 +241,8 @@ async function preDeploy() {
     log('Generated a random Verify Token (48 hex).');
   } else {
     const supplied = await input({
-      message: 'Verify Token (leave blank to generate a secure random one):',
+      message:
+        'Verify Token - you INVENT this; it is only a shared secret for the webhook handshake (Meta echoes it back, our Lambda checks it matches). Leave BLANK to auto-generate (recommended):',
       default: '',
     });
     verifyToken = supplied.trim() || generateVerifyToken();
@@ -247,23 +290,84 @@ async function preDeploy() {
 // ----- post-deploy flow -----------------------------------------------------
 async function postDeploy() {
   section('Post-deploy: wire the webhook in Meta (Phase B)');
+  log('Pulling config from .deploy-tmp/whatsapp-config.env and the Access/Verify');
+  log('tokens from AWS Secrets Manager (populated by pre-deploy), so you should');
+  log('not need to re-enter anything.\n');
 
-  const token = await password({
-    message: 'Access token (System User token recommended):',
-    mask: '*',
-  });
-  const appId = await input({
-    message: 'App ID:',
-    validate: (v) => /^\d+$/.test(v.trim()) || 'App ID is numeric',
-  });
-  const wabaId = await input({
-    message: 'WABA ID:',
-    validate: (v) => /^\d+$/.test(v.trim()) || 'WABA ID is numeric',
-  });
-  const verifyToken = await password({
-    message: 'Verify Token (the same value you populated into Secrets Manager):',
-    mask: '*',
-  });
+  const cfg = await loadConfigEnv();
+  const prefix =
+    envOr('WHATSAPP_DEPLOYMENT_PREFIX') || cfg.WHATSAPP_DEPLOYMENT_PREFIX || (await promptPrefix());
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const client = makeClient(region);
+  const names = secretNamesForPrefix(prefix);
+
+  // App ID + WABA ID: env -> config env -> prompt.
+  const appId = await resolveValue('WHATSAPP_APP_ID', cfg.WHATSAPP_APP_ID, 'App ID', () =>
+    input({ message: 'App ID:', validate: (v) => /^\d+$/.test(v.trim()) || 'App ID is numeric' }),
+  );
+  const wabaId = await resolveValue('WHATSAPP_WABA_ID', cfg.WHATSAPP_WABA_ID, 'WABA ID', () =>
+    input({ message: 'WABA ID:', validate: (v) => /^\d+$/.test(v.trim()) || 'WABA ID is numeric' }),
+  );
+
+  // Access token + Verify Token: env -> Secrets Manager -> prompt (interactive).
+  // The whole point of this flow is that pre-deploy already stored both, so the
+  // operator never has to know or re-type the Verify Token.
+  let token = envOr('WHATSAPP_ACCESS_TOKEN');
+  if (token) {
+    log('Using access token from $WHATSAPP_ACCESS_TOKEN.');
+  } else {
+    token = await getSecret(client, names.accessToken);
+    if (token) log(`Read access token from Secrets Manager (${names.accessToken}).`);
+  }
+  let verifyToken = envOr('WHATSAPP_VERIFY_TOKEN');
+  if (verifyToken) {
+    log('Using Verify Token from $WHATSAPP_VERIFY_TOKEN.');
+  } else {
+    verifyToken = await getSecret(client, names.verifyToken);
+    if (verifyToken) log(`Read Verify Token from Secrets Manager (${names.verifyToken}).`);
+  }
+  if (!token && !NON_INTERACTIVE) {
+    token = await password({ message: 'Access token (System User token recommended):', mask: '*' });
+  }
+  if (!verifyToken && !NON_INTERACTIVE) {
+    verifyToken = await password({
+      message: 'Verify Token (the value populated into Secrets Manager):',
+      mask: '*',
+    });
+  }
+  if (!token || !verifyToken) {
+    log(
+      'Missing access token and/or Verify Token. Run the pre-deploy flow first ' +
+        'to populate the secrets, or set $WHATSAPP_ACCESS_TOKEN / $WHATSAPP_VERIFY_TOKEN.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  // The app-level POST /{app-id}/subscriptions endpoint requires an APP access
+  // token (app_id|app_secret), NOT the user / System User token (which returns
+  // error code 15 there). Read the App Secret (env -> Secrets Manager -> prompt)
+  // and build the app token for that one call. The WABA /subscribed_apps call
+  // below still uses the user/system token.
+  let appSecret = envOr('WHATSAPP_APP_SECRET');
+  if (appSecret) {
+    log('Using App Secret from $WHATSAPP_APP_SECRET.');
+  } else {
+    appSecret = await getSecret(client, names.appSecret);
+    if (appSecret) log(`Read App Secret from Secrets Manager (${names.appSecret}).`);
+  }
+  if (!appSecret && !NON_INTERACTIVE) {
+    appSecret = await password({ message: 'App Secret (to build the app access token):', mask: '*' });
+  }
+  if (!appSecret) {
+    log(
+      'Missing App Secret - cannot build the app access token required by ' +
+        '/subscriptions. Run pre-deploy first or set $WHATSAPP_APP_SECRET.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const appToken = appAccessToken(appId, appSecret);
 
   // Read the deployed webhook URL.
   const outPath = path.join(REPO_ROOT, 'cdk-outputs', 'wa-webhook.json');
@@ -285,12 +389,12 @@ async function postDeploy() {
 
   // Idempotency: is the app subscription already configured?
   section('Setting the app webhook subscription');
-  const existing = await graph.getAppSubscriptions(token, appId);
+  const existing = await graph.getAppSubscriptions(appToken, appId);
   const desired = { callbackUrl: webhookUrl, fields: WEBHOOK_FIELDS };
   if (isAppSubscriptionConfigured(existing.body, desired)) {
     log('App subscription already configured with the desired callback URL + fields (no-op).');
   } else {
-    const res = await graph.setAppSubscription(token, appId, {
+    const res = await graph.setAppSubscription(appToken, appId, {
       callbackUrl: webhookUrl,
       verifyToken,
       fields: WEBHOOK_FIELDS,
