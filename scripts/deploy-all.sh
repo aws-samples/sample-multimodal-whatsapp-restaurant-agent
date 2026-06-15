@@ -153,6 +153,30 @@ print_warning() { echo -e "${YELLOW}[WARN] $1${NC}"; }
 print_info()    { echo -e "${BLUE}[INFO] $1${NC}"; }
 
 ################################################################################
+# Auto-load the operator config written by the WhatsApp setup CLI.
+#
+# scripts/whatsapp-setup (pre-deploy flow) writes .deploy-tmp/whatsapp-config.env
+# with the NON-SECRET Meta identifiers (phone number id, WABA id, app id, prefix).
+# The webhook stack needs WHATSAPP_PHONE_NUMBER_ID because replies are sent via
+# `POST /{PHONE_NUMBER_ID}/messages`: without it the worker still derives the
+# Customer_Id and runs the agent, but it cannot DELIVER the reply (it logs
+# "missing PHONE_NUMBER_ID or token"). We source the file here so the operator
+# does not have to remember to export it by hand. SECRETS are never in this file
+# - the access token / app secret / verify token live only in Secrets Manager
+# (also populated by the setup CLI).
+################################################################################
+WA_CONFIG_ENV="$WORKSPACE_ROOT/.deploy-tmp/whatsapp-config.env"
+if [ -f "$WA_CONFIG_ENV" ]; then
+  # shellcheck disable=SC1090  # path is runtime-resolved by design
+  set -a
+  source "$WA_CONFIG_ENV"
+  set +a
+  print_info "Loaded Meta config from .deploy-tmp/whatsapp-config.env (non-secret identifiers)."
+  print_info "  WHATSAPP_PHONE_NUMBER_ID feeds the webhook so the worker can send replies via the Messages API."
+  print_info "  (Secrets are NOT here - the access token / app secret / verify token live only in Secrets Manager.)"
+fi
+
+################################################################################
 # Forward-compatibility guard.
 #
 # module_ready <relative-dir> - returns 0 when the directory exists AND holds a
