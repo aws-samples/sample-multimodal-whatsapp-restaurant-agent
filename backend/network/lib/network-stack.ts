@@ -120,10 +120,25 @@ export class NetworkStack extends cdk.Stack {
       'HTTPS to AWS service APIs (Bedrock, KVS, S3, Chime, SSM, etc.)',
     );
 
+    // KVS managed TURN runs entirely on port 443 - the iceServers URIs are
+    // turn:<host>:443?transport=udp / turns:<host>:443?transport=udp|tcp. The
+    // Call Runtime allocates a relay candidate and sends/receives all relayed
+    // media over UDP 443 to the TURN server, so egress UDP 443 is REQUIRED.
+    // (An earlier assumption that TURN used ephemeral high UDP ports was wrong;
+    // without this rule ICE gathering completes with no relay candidate.)
+    agentSg.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.udp(443),
+      'KVS managed TURN over UDP 443 (relay allocation + relayed media)',
+    );
+
+    // Retained for any direct/non-relay UDP media path on ephemeral ports. The
+    // relay path above is what KVS TURN actually uses; this is a superset kept
+    // for defence in depth and possible future srflx/host paths.
     agentSg.addEgressRule(
       ec2.Peer.anyIpv4(),
       ec2.Port.udpRange(1024, 65535),
-      'WebRTC/TURN media (KVS-managed TURN on ephemeral UDP ports)',
+      'WebRTC media on ephemeral UDP ports (non-relay paths)',
     );
 
     // ───────────── Outputs (NO exportName per P5 / r4 rule) ─────────────
