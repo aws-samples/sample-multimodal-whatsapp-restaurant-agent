@@ -1,16 +1,23 @@
-# Telephony Voice Ordering Agent — runtime dependencies (r6).
+# WhatsApp Call Runtime — runtime dependencies.
 #
-# r6 dropped: aiortc, av, ebmlite, audioop-lts, pyaudio, prompt_toolkit.
-# All μ-law ↔ L16 + 8 kHz ↔ 16 kHz resampling is done by FreeSWITCH's
-# mod_audio_stream now; the agent sees raw L16 16 kHz on the WebSocket
-# and never touches the codec path.
+# Unlike the telephony reference (where FreeSWITCH owned the codec path), the
+# WhatsApp Call Runtime runs WebRTC INSIDE the container, so aiortc + av are
+# required here. The runtime must be deployed in VPC network mode for WebRTC:
+# https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc.html
 #
-# CodeBuild regenerates `requirements.lock` on REGENERATE_LOCK=1 (task 4.4
-# optional) to pin the full transitive tree per NFR3 / P8.
+# CodeBuild regenerates `requirements.lock` on REGENERATE_LOCK=1 to pin the full
+# transitive tree per NFR3 / P8.
 
 fastapi==0.123.9
 uvicorn[standard]>=0.31.1
 boto3>=1.35.0
+
+# WebRTC stack — aiortc builds the single-shot SDP answer and carries the media
+# (relayed via KVS managed TURN); av (PyAV) is its codec dependency and also the
+# transcode path for Nova 2 Sonic in Tasks 18/19. Native deps build in the
+# ARM64 CodeBuild image, not on a dev Mac — the unit tests mock them out.
+aiortc>=1.9.0
+av>=12.0.0
 
 # Strands Agents — bidirectional streaming variant (BidiAgent + Nova Sonic).
 strands-agents[bidi]==1.37.0
