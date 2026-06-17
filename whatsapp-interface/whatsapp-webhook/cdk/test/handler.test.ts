@@ -15,7 +15,7 @@ import * as fc from 'fast-check';
 
 import { verifySubscription, verifySignature } from '../lambda/webhook-handler/index';
 import { deriveCustomerId, normalizeE164, CUSTOMER_ID_LEN, PhoneNormalizationError } from '../lambda/webhook-handler/lib/customerId';
-import { parseMessages, iterRawEvents, normalizeMessage, routeOf, ROUTE_CHAT, ROUTE_VOICENOTE, ROUTE_IGNORE } from '../lambda/webhook-handler/lib/dispatch';
+import { parseMessages, iterRawEvents, normalizeMessage, parseCallEvent, routeOf, ROUTE_CHAT, ROUTE_VOICENOTE, ROUTE_IGNORE } from '../lambda/webhook-handler/lib/dispatch';
 import { textWithinBounds, novaFormatFor, shouldInvoke } from '../lambda/webhook-handler/lib/textHandler';
 import { isWindowOpen, WINDOW_SECONDS } from '../lambda/webhook-handler/lib/windowTable';
 import { runtimeSessionId } from '../lambda/webhook-handler/lib/runtimeClient';
@@ -218,6 +218,28 @@ describe('dispatch parsing + routing (unit)', () => {
     expect(events.map((e) => e.kind)).toEqual(['message', 'call']); // statuses ignored
     expect(events[0].data.type).toBe('text');
     expect(events[1].data.event).toBe('connect');
+  });
+
+  test('parseCallEvent projects the connect offer and a terminate status', () => {
+    const connect = parseCallEvent({
+      id: 'wacid.ABC',
+      event: 'connect',
+      from: '15551230000',
+      to: '15557890000',
+      session: { sdp_type: 'offer', sdp: 'v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\n' },
+    });
+    expect(connect).toMatchObject({
+      id: 'wacid.ABC',
+      event: 'connect',
+      sdpType: 'offer',
+    });
+    expect(connect.sdp).toContain('v=0');
+
+    const terminate = parseCallEvent({ id: 'wacid.ABC', event: 'terminate', status: 'COMPLETED' });
+    expect(terminate).toMatchObject({ event: 'terminate', status: 'COMPLETED', sdp: '', sdpType: '' });
+
+    // Missing/empty object never throws and yields empty fields.
+    expect(parseCallEvent(undefined)).toMatchObject({ id: '', event: '', sdp: '' });
   });
 });
 

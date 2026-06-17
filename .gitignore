@@ -80,3 +80,7 @@ real-time-communication-on-aws.txt
 # --- IDE / agent session state ---
 session.backup
 *.session.backup
+
+# Captured live WebRTC SDP offers/answers (ephemeral session data, never commit)
+backend/agentcore-runtime-voice-webrtc/**/offer.sdp
+backend/agentcore-runtime-voice-webrtc/**/answer.sdp

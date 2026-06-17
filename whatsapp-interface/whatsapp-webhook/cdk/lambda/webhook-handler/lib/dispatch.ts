@@ -65,6 +65,36 @@ export function iterRawEvents(body: any): RawEvent[] {
   return out;
 }
 
+/** A parsed WhatsApp `calls` webhook event (pure projection of the raw object).
+ *  `sdp`/`sdpType` are populated for `connect` events (the offer); empty
+ *  otherwise. Phone numbers are intentionally captured but callers must treat
+ *  them as PII (never log above DEBUG, per the privacy posture). */
+export interface CallEvent {
+  id: string;
+  event: string; // connect | terminate | ... (Meta's `event` field)
+  from: string;
+  to: string;
+  sdpType: string; // "offer" on connect
+  sdp: string; // RFC 8866 SDP, present on connect
+  status: string; // present on terminate (COMPLETED | FAILED)
+}
+
+/** Pure: project a raw Meta `calls[]` object into a CallEvent. The connect
+ *  event carries the caller's SDP offer at `session.sdp` (`session.sdp_type ==
+ *  "offer"`); terminate carries a `status`. */
+export function parseCallEvent(call: any): CallEvent {
+  const session = call?.session ?? {};
+  return {
+    id: call?.id ?? '',
+    event: call?.event ?? '',
+    from: call?.from ?? '',
+    to: call?.to ?? '',
+    sdpType: session?.sdp_type ?? '',
+    sdp: session?.sdp ?? '',
+    status: call?.status ?? '',
+  };
+}
+
 /** Normalize a single raw WhatsApp message into an InboundMessage. Public so
  *  the Worker Lambda can normalize a message it dequeued from SQS. */
 export function normalizeMessage(msg: any): InboundMessage {

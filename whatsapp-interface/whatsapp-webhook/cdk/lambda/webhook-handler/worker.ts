@@ -12,7 +12,7 @@
 // a poison message lands in the DLQ. The Access_Token is loaded once and never
 // logged.
 
-import { ROUTE_CHAT, ROUTE_VOICENOTE, normalizeMessage, routeOf } from './lib/dispatch.js';
+import { ROUTE_CHAT, ROUTE_VOICENOTE, normalizeMessage, parseCallEvent, routeOf } from './lib/dispatch.js';
 import type { RawEvent } from './lib/dispatch.js';
 import { handleChatMessage } from './lib/textHandler.js';
 import { handleVoiceNote } from './lib/audioHandler.js';
@@ -47,7 +47,22 @@ async function processRecord(record: any, accessToken: string): Promise<void> {
   // the ingest. The SDP answer is delivered via a separate POST /calls
   // (pre_accept/accept), so calls can be handled fully async off the queue.
   if (envelope.kind === 'call') {
-    console.info('calls event received; the calls signaling proxy is Task 17 (worker)');
+    // ITERATION 2 (capture): log the connect event's offer SDP so a live test
+    // call hands us an offer.sdp to feed the single-shot-ICE spike (Task 14
+    // gate). The SDP is base64-encoded onto ONE line for easy grep+decode from
+    // CloudWatch; phone numbers are intentionally NOT logged (PII). This is
+    // temporary capture instrumentation that Task 17 (the signaling proxy)
+    // replaces with the real offer->answer relay.
+    const ev = parseCallEvent(envelope.data);
+    if (ev.event === 'connect' && ev.sdp) {
+      const sdpB64 = Buffer.from(ev.sdp, 'utf8').toString('base64');
+      console.info(
+        `[calls-capture] connect call_id=${ev.id} sdp_type=${ev.sdpType} ` +
+          `sdp_len=${ev.sdp.length} offer_sdp_b64=${sdpB64}`,
+      );
+    } else {
+      console.info(`[calls-capture] event=${ev.event || 'unknown'} call_id=${ev.id} (no offer SDP)`);
+    }
     // TODO(Task 17): relay offer to the Call Runtime (action=offer, turnOnly),
     // return the single-shot answer to Meta via POST /<phone-number-id>/calls
     // pre_accept then accept; on terminate, disconnect the runtime session.
