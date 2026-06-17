@@ -447,16 +447,23 @@ export class VoiceNotesStack extends cdk.Stack {
     );
 
     // Sid 6 - Bedrock invoke for the Amazon Nova 2 Sonic bounded speech-to-speech
-    // session. Unlike the Chat Runtime (Converse / InvokeModel*), the VoiceNotes
-    // Runtime uses the BIDIRECTIONAL stream (`amazon.nova-2-sonic-v1:0`), so it
-    // is granted `bedrock:InvokeModelWithBidirectionalStream` scoped to the
-    // amazon.nova-2-sonic* model family (this region and any region a
-    // cross-region inference profile routes to) plus account/region inference
-    // profiles. The Converse InvokeModel* actions are intentionally NOT granted.
+    // session. The VoiceNotes Runtime uses the BIDIRECTIONAL stream
+    // (`amazon.nova-2-sonic-v1:0`). Nova 2 Sonic's bidirectional invoke requires
+    // `bedrock:InvokeModel` IN ADDITION to InvokeModelWithBidirectionalStream -
+    // without InvokeModel the stream opens and accepts audio but the model returns
+    // AccessDeniedException when it tries to generate (the bug this fixes).
+    // InvokeModelWithResponseStream is granted for parity with the telephony
+    // runtime (the proven Nova Sonic reference). All three are scoped to the
+    // amazon.nova-2-sonic* model family (this region and any region a cross-region
+    // inference profile routes to) plus account/region inference profiles.
     runtimeRole.addToPolicy(
       new iam.PolicyStatement({
         sid: 'BedrockInvokeNovaSonic',
-        actions: ['bedrock:InvokeModelWithBidirectionalStream'],
+        actions: [
+          'bedrock:InvokeModelWithBidirectionalStream',
+          'bedrock:InvokeModel',
+          'bedrock:InvokeModelWithResponseStream',
+        ],
         resources: [
           // Nova 2 Sonic foundation model family in this region.
           cdk.Fn.sub('arn:${Partition}:bedrock:${R}::foundation-model/amazon.nova-2-sonic*', {
@@ -540,11 +547,26 @@ export class VoiceNotesStack extends cdk.Stack {
         networkMode: 'PUBLIC',
       },
       protocolConfiguration: 'HTTP',
+      // Lifecycle (testing value): recycle an idle microVM after 5 minutes so a
+      // redeployed image propagates quickly and a stale image cannot linger for
+      // the 8 h default. idleRuntimeSessionTimeout resets on each invoke, so a
+      // back-to-back voice-note exchange still reuses the warm microVM; it only
+      // recycles once the customer goes quiet for 5 min. maxLifetime caps any
+      // single microVM at 15 min. TUNE FOR PRODUCTION (e.g. idle 600-900s).
+      lifecycleConfiguration: {
+        idleRuntimeSessionTimeout: 300, // 5 minutes
+        maxLifetime: 900, // 15 minutes hard cap
+      },
       environmentVariables: {
         LOG_LEVEL: 'INFO',
         DEPLOYMENT_PREFIX: prefix,
         AGENTCORE_GATEWAY_URL: agentCoreGatewayUrl.valueAsString,
         SHARED_MEMORY_ARN: sharedMemoryArn.valueAsString,
+        // Tie the runtime resource to the agent source hash so a rebuilt image
+        // forces a runtime UPDATE -> new version -> AgentCore re-resolves :latest
+        // and pulls the freshly built image. (Without this, an unchanged
+        // containerUri string makes CFN see no diff and skip the re-pull.)
+        AGENT_SOURCE_VERSION: cdk.Fn.join(',', deployment.objectKeys),
       },
     });
 
@@ -597,7 +619,7 @@ export class VoiceNotesStack extends cdk.Stack {
         {
           id: 'AwsSolutions-IAM5',
           reason:
-            'Runtime role residual wildcards, all scoped or service-mandated: (a) ecr:GetAuthorizationToken is account-scoped by AWS (no resource-level IAM); (b) xray:* and cloudwatch:PutMetricData are service-scoped, and PutMetricData is further conditioned on cloudwatch:namespace = bedrock-agentcore; (c) logs:DescribeLogGroups requires log-group:* (a list API IAM validates against the wildcard), while the create/write log actions are scoped to /aws/bedrock-agentcore/runtimes/*; (d) bedrock:InvokeModelWithBidirectionalStream is scoped to the amazon.nova-2-sonic* foundation-model family plus account/region inference-profiles (Nova 2 Sonic may be reached via a cross-region inference profile); (e) bedrock-agentcore:InvokeGateway is scoped to gateways in this account/region. The shared-memory statement uses the exact SharedMemoryArn parameter with no wildcard. ECR image pull is scoped to this stack repo.',
+            'Runtime role residual wildcards, all scoped or service-mandated: (a) ecr:GetAuthorizationToken is account-scoped by AWS (no resource-level IAM); (b) xray:* and cloudwatch:PutMetricData are service-scoped, and PutMetricData is further conditioned on cloudwatch:namespace = bedrock-agentcore; (c) logs:DescribeLogGroups requires log-group:* (a list API IAM validates against the wildcard), while the create/write log actions are scoped to /aws/bedrock-agentcore/runtimes/*; (d) bedrock:InvokeModel, InvokeModelWithResponseStream and InvokeModelWithBidirectionalStream are scoped to the amazon.nova-2-sonic* foundation-model family plus account/region inference-profiles (Nova 2 Sonic bidirectional invoke requires InvokeModel in addition to the bidirectional action, and may be reached via a cross-region inference profile); (e) bedrock-agentcore:InvokeGateway is scoped to gateways in this account/region. The shared-memory statement uses the exact SharedMemoryArn parameter with no wildcard. ECR image pull is scoped to this stack repo.',
         },
       ],
       true,

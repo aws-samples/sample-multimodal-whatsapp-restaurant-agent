@@ -37,6 +37,14 @@ import os
 import bounded_sonic
 import ogg_codec
 
+# Configure root logging to INFO (force=True overrides uvicorn's handler config)
+# so the bounded-Sonic diagnostics in bounded_sonic surface in the runtime log.
+# Override with LOG_LEVEL=DEBUG/WARNING via the runtime env.
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    force=True,
+)
 logger = logging.getLogger(__name__)
 
 # Could-not-understand fallback text (R7.6). The worker sends this as a normal

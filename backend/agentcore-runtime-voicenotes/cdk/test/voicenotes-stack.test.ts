@@ -111,7 +111,7 @@ describe('VoiceNotesStack synth/config guard', () => {
     );
   });
 
-  test('Bedrock invoke grants the Nova 2 Sonic bidirectional stream and excludes Converse', () => {
+  test('Bedrock invoke grants the Nova 2 Sonic bidirectional stream plus InvokeModel', () => {
     const template = synth();
     const policies = template.findResources('AWS::IAM::Policy');
     type Statement = { Sid?: string; Action?: unknown; Resource?: unknown };
@@ -126,13 +126,19 @@ describe('VoiceNotesStack synth/config guard', () => {
     // A single-element Action list renders as a scalar string in CFN; normalize.
     const raw = bedrock[0].Action as string | string[];
     const actions = Array.isArray(raw) ? raw : [raw];
-    // VoiceNotes uses the bidirectional speech-to-speech stream...
+    // Nova 2 Sonic bidirectional invoke requires the bidirectional stream action
+    // AND bedrock:InvokeModel (without it the model returns AccessDeniedException
+    // when generating); InvokeModelWithResponseStream is granted for parity with
+    // the telephony reference runtime.
     expect(actions).toEqual(
-      expect.arrayContaining(['bedrock:InvokeModelWithBidirectionalStream']),
+      expect.arrayContaining([
+        'bedrock:InvokeModelWithBidirectionalStream',
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+      ]),
     );
-    // ...and NOT the Converse text-path InvokeModel* actions.
-    expect(actions).not.toContain('bedrock:InvokeModel');
-    expect(actions).not.toContain('bedrock:InvokeModelWithResponseStream');
+    // Still NOT the Converse text-path action the Chat Runtime uses.
+    expect(actions).not.toContain('bedrock:Converse');
   });
 
   test('deployment-prefix discipline holds on the runtime IAM role name', () => {

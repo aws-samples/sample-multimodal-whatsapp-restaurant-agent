@@ -78,8 +78,14 @@ export interface VoiceNoteResult {
 }
 
 /** Invoke the VoiceNotes Runtime with the Ogg Opus voice note (Task 12.5,
- *  R7.3). session_id == customer_id (R5.1). Returns the parsed JSON response
- *  (audio reply or fallback) or null on an invoke-level failure. */
+ *  R7.3). The PAYLOAD session_id == customer_id (R5.1, for memory continuity),
+ *  and the AgentCore TRANSPORT runtimeSessionId is the SAME deterministic
+ *  per-customer id used by Chat: back-to-back notes in one exchange reuse the
+ *  warm microVM (no per-note container cold start). Redeployed runtime images
+ *  propagate via the runtime's short idleRuntimeSessionTimeout (lifecycle
+ *  config), which recycles the microVM between exchanges - not by forcing a
+ *  fresh transport id per note. Returns the parsed JSON response or null on an
+ *  invoke-level failure. */
 export async function invokeVoiceNote(payload: VoiceNotePayload): Promise<VoiceNoteResult | null> {
   const arn = process.env.VOICENOTES_RUNTIME_ARN;
   if (!arn) {
