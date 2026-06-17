@@ -92,6 +92,64 @@ def _strip_to_relay(sdp: str) -> str:
     return sep.join(kept) + (sep if sdp.endswith(("\n", "\r\n")) else "")
 
 
+def _first_relay_endpoint(sdp: str) -> tuple[str, str] | None:
+    """Return (ip, port) of the first ``typ relay`` candidate, or None.
+
+    Candidate grammar: ``a=candidate:<foundation> <component> <transport>
+    <priority> <connection-address> <port> typ relay ...`` - so the routable
+    relay endpoint is tokens [4] and [5] after the ``a=candidate:`` prefix."""
+    for line in sdp.splitlines():
+        if line.startswith("a=candidate:") and " typ relay" in line:
+            toks = line.split()
+            if len(toks) >= 6:
+                return toks[4], toks[5]
+    return None
+
+
+def _munge_for_meta(sdp: str) -> str:
+    """Rewrite the aiortc answer SDP so Meta's Calling API accepts it (avoids
+    error 138008 "SDP Validation error"). Three transforms, applied line by line:
+
+      1. exactly ONE ``a=fingerprint:sha-256`` line - aiortc emits sha-256 +
+         sha-384 + sha-512, but Meta requires a single sha-256 fingerprint;
+      2. the media address must be ROUTABLE - the container has no public IP, so
+         aiortc puts a link-local (169.254.x.x) in ``c=`` and the ``m=`` port.
+         Rewrite both to the TURN relay candidate's public ip/port (the only
+         address Meta can actually reach);
+      3. ``a=recvonly`` -> ``a=sendrecv`` - the offer is sendrecv; answering
+         recvonly invites teardown.
+
+    If no relay candidate is present (should not happen in VPC mode), the c=/m=
+    rewrite is skipped but the fingerprint + direction fixes still apply."""
+    relay = _first_relay_endpoint(sdp)
+    sep = "\r\n" if "\r\n" in sdp else "\n"
+    trailing = sdp.endswith(("\n", "\r\n"))
+    out: list[str] = []
+    seen_sha256_fp = False
+    for line in sdp.split(sep):
+        if line.startswith("a=fingerprint:"):
+            # Keep only the first sha-256 fingerprint; drop sha-384/sha-512/dupes.
+            if "sha-256" in line.lower() and not seen_sha256_fp:
+                seen_sha256_fp = True
+                out.append(line)
+            continue
+        if relay is not None and line.startswith("m=audio "):
+            # m=audio <port> <proto> <fmt...> -> swap <port> for the relay port.
+            parts = line.split(" ")
+            if len(parts) >= 2:
+                parts[1] = relay[1]
+                out.append(" ".join(parts))
+                continue
+        if relay is not None and line.startswith("c=IN IP4 "):
+            out.append(f"c=IN IP4 {relay[0]}")
+            continue
+        if line in ("a=recvonly", "a=sendonly", "a=inactive"):
+            out.append("a=sendrecv")
+            continue
+        out.append(line)
+    return sep.join(out) + (sep if trailing else "")
+
+
 async def create_single_shot_answer(
     offer_sdp: str,
     offer_type: str,
@@ -125,6 +183,9 @@ async def create_single_shot_answer(
     sdp = pc.localDescription.sdp
     if turn_only:
         sdp = _strip_to_relay(sdp)
+    # Always reshape the answer to Meta's SDP validation rules (single sha-256
+    # fingerprint, routable relay c=/m=, sendrecv). See _munge_for_meta.
+    sdp = _munge_for_meta(sdp)
 
     logger.info(
         "single-shot answer ready pc_id=%s gathering=%s",

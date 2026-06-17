@@ -209,3 +209,109 @@ def test_property_call_id_roundtrips_and_pc_closed(call_id, use_b64):
     finally:
         handler.kvs_turn.get_ice_servers = orig_turn  # type: ignore[assignment]
         handler.single_shot_answerer.create_single_shot_answer = orig_answer  # type: ignore[assignment]
+
+
+# --- Task 17: offer (hold-open) + disconnect contract ----------------------
+
+OFFER_PAYLOAD = {
+    "action": "offer",
+    "call_id": "call-17",
+    "data": {"sdp": OFFER_SDP, "type": "offer", "turnOnly": True},
+}
+
+
+@pytest.fixture(autouse=True)
+def _clear_pcs():
+    """Each test starts with an empty live-pc registry (no cross-test leak)."""
+    handler._PCS.clear()
+    yield
+    handler._PCS.clear()
+
+
+@pytest.mark.asyncio
+async def test_offer_holds_pc_open_and_registers(monkeypatch):
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    capture: dict = {}
+    pc = _install_answerer(monkeypatch, sdp="v=0\r\nHELD\r\n", capture=capture)
+
+    out = await handler.run_offer(OFFER_PAYLOAD)
+
+    # Design contract: returns `sdp` (not `answer_sdp`), echoes call_id + pc_id.
+    assert out["sdp"] == "v=0\r\nHELD\r\n"
+    assert out["call_id"] == "call-17"
+    assert out["type"] == "answer"
+    pc_id = out["pc_id"]
+    # The offer reads data.sdp and threads turn_only + the drain on_track hook.
+    assert capture["offer_sdp"] == OFFER_SDP
+    assert capture["kwargs"].get("turn_only") is True
+    assert capture["kwargs"].get("on_track") is handler._drain_track
+    # The pc is HELD open (not closed) and registered by pc_id.
+    assert pc.closed is False
+    assert handler._PCS.get(pc_id) is pc
+
+
+@pytest.mark.asyncio
+async def test_offer_missing_sdp_returns_bad_offer(monkeypatch):
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch)
+    out = await handler.run_offer({"action": "offer", "call_id": "c", "data": {}})
+    assert out["error"] == "bad_offer"
+    assert handler._PCS == {}
+
+
+@pytest.mark.asyncio
+async def test_disconnect_closes_and_deregisters(monkeypatch):
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    pc = _install_answerer(monkeypatch, capture={})
+    offered = await handler.run_offer(OFFER_PAYLOAD)
+    pc_id = offered["pc_id"]
+    assert pc_id in handler._PCS
+
+    out = await handler.run_disconnect({"action": "disconnect", "data": {"pc_id": pc_id}})
+
+    assert out == {"pc_id": pc_id, "status": "disconnected"}
+    assert pc.closed is True
+    assert pc_id not in handler._PCS
+
+
+@pytest.mark.asyncio
+async def test_disconnect_unknown_pc_is_idempotent():
+    out = await handler.run_disconnect({"action": "disconnect", "data": {"pc_id": "pc-nope"}})
+    assert out == {"pc_id": "pc-nope", "status": "not_found"}
+
+
+@pytest.mark.asyncio
+async def test_disconnect_missing_pc_id_returns_error():
+    out = await handler.run_disconnect({"action": "disconnect", "data": {}})
+    assert out["error"] == "bad_disconnect"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_routes_offer_and_disconnect(monkeypatch):
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch, capture={})
+    offered = await handler.handle_invocation(OFFER_PAYLOAD)
+    assert "sdp" in offered and offered["pc_id"] in handler._PCS
+
+    disc = await handler.handle_invocation(
+        {"action": "disconnect", "data": {"pc_id": offered["pc_id"]}}
+    )
+    assert disc["status"] == "disconnected"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_defaults_to_offer(monkeypatch):
+    """Omitting action defaults to the offer (connect) path."""
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch, capture={})
+    out = await handler.handle_invocation(
+        {"call_id": "c", "data": {"sdp": OFFER_SDP, "type": "offer"}}
+    )
+    assert "sdp" in out
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unknown_action_errors():
+    out = await handler.handle_invocation({"action": "frobnicate", "call_id": "c"})
+    assert out["error"] == "unsupported_action"
+    assert out["detail"] == "frobnicate"
