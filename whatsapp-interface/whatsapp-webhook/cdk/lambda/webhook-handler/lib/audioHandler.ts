@@ -23,7 +23,7 @@ import { ROUTE_VOICENOTE, routeOf } from './dispatch.js';
 import { downloadVoiceNote } from './mediaApi.js';
 import { invokeVoiceNote } from './runtimeClient.js';
 import type { VoiceNoteResult } from './runtimeClient.js';
-import { sendAudio, sendText } from './whatsappClient.js';
+import { sendAudio, sendText, sendTypingIndicator } from './whatsappClient.js';
 import { updateInbound } from './windowTable.js';
 
 const CHANNEL = 'voicenote';
@@ -103,6 +103,11 @@ export async function handleVoiceNote(
   if (msg.timestamp !== null) {
     await updateInbound(customerId, msg.timestamp);
   }
+
+  // Show the "typing..." indicator while we download + run the bounded Sonic
+  // turn (the Cloud API has no "recording audio" variant, so "typing..." is the
+  // only option). Best-effort: never blocks or fails the reply.
+  await sendTypingIndicator(msg.messageId, accessToken);
 
   // 3. Download the Ogg Opus voice note (R7.1/R7.2). Any failure/oversize ->
   //    null (R7.7/R7.8). 4. Invoke the VoiceNotes Runtime only if we have audio

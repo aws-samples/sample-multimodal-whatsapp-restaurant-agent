@@ -24,6 +24,7 @@ import {
   isRetryableStatus,
   sendWithRetry,
   sendText,
+  sendTypingIndicator,
   BACKOFFS_MS,
   MAX_ATTEMPTS,
   type AttemptResult,
@@ -307,6 +308,72 @@ describe('Property 7 (routing) + token-unavailable', () => {
     const ok = await sendText('15551234567', 'hello', '', 'wa-1f0c3a9b2e4d6f80');
     expect(ok).toBe(false);
     if (prev !== undefined) process.env.PHONE_NUMBER_ID = prev;
+  });
+
+  test('sendTypingIndicator no-ops (no fetch) when config/message id is missing', async () => {
+    const prevId = process.env.PHONE_NUMBER_ID;
+    const prevFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    try {
+      // Missing PHONE_NUMBER_ID -> no call.
+      delete process.env.PHONE_NUMBER_ID;
+      await sendTypingIndicator('wamid.ABC', 'tok');
+      // Config present but no message id / no token -> still no call.
+      process.env.PHONE_NUMBER_ID = '123456';
+      await sendTypingIndicator('', 'tok');
+      await sendTypingIndicator('wamid.ABC', '');
+      expect(calls).toBe(0);
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevId !== undefined) process.env.PHONE_NUMBER_ID = prevId;
+      else delete process.env.PHONE_NUMBER_ID;
+    }
+  });
+
+  test('sendTypingIndicator posts a read + text typing_indicator for the inbound message', async () => {
+    const prevId = process.env.PHONE_NUMBER_ID;
+    const prevFetch = globalThis.fetch;
+    let captured: { url: string; body: unknown } | null = null;
+    globalThis.fetch = (async (url: string, init: { body: string }) => {
+      captured = { url, body: JSON.parse(init.body) };
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      process.env.PHONE_NUMBER_ID = '123456';
+      await sendTypingIndicator('wamid.XYZ', 'tok');
+      expect(captured).not.toBeNull();
+      expect(captured!.url).toContain('/123456/messages');
+      expect(captured!.body).toMatchObject({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: 'wamid.XYZ',
+        typing_indicator: { type: 'text' },
+      });
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevId !== undefined) process.env.PHONE_NUMBER_ID = prevId;
+      else delete process.env.PHONE_NUMBER_ID;
+    }
+  });
+
+  test('sendTypingIndicator never throws even when fetch rejects', async () => {
+    const prevId = process.env.PHONE_NUMBER_ID;
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new Error('network down');
+    }) as typeof fetch;
+    try {
+      process.env.PHONE_NUMBER_ID = '123456';
+      await expect(sendTypingIndicator('wamid.XYZ', 'tok')).resolves.toBeUndefined();
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevId !== undefined) process.env.PHONE_NUMBER_ID = prevId;
+      else delete process.env.PHONE_NUMBER_ID;
+    }
   });
 });
 

@@ -225,6 +225,42 @@ export async function sendText(
   return false;
 }
 
+/** Show the WhatsApp "typing..." indicator while a reply is being prepared
+ *  (best-effort UX). A single POST both marks the inbound message read AND
+ *  displays the typing bubble, which Meta auto-dismisses when we send our reply
+ *  or after ~25 s. Requires the INBOUND message id.
+ *
+ *  Fire-and-forget by contract: never throws, never blocks the reply path - any
+ *  failure (including a missing PHONE_NUMBER_ID / token / message id) is
+ *  swallowed, because the indicator is a nicety and must never delay or break
+ *  the actual response. NOTE: the Cloud API only exposes a "text" typing
+ *  indicator - there is no "recording audio" variant - so voice-note turns also
+ *  surface as "typing...". */
+export async function sendTypingIndicator(messageId: string, token: string): Promise<void> {
+  const phoneNumberId = process.env.PHONE_NUMBER_ID;
+  if (!phoneNumberId || !token || !messageId) return;
+  const url = `${GRAPH_BASE}/${phoneNumberId}/messages`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' },
+      }),
+      signal: controller.signal,
+    });
+  } catch {
+    /* best-effort: the typing indicator must never block or fail the reply */
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Voice reply (Task 12.5, R7.5): send the VoiceNotes Runtime's Ogg Opus output
 // back to the customer as a WhatsApp AUDIO (voice) message. This is a two-step

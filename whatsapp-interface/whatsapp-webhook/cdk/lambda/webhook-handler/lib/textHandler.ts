@@ -17,7 +17,7 @@ import type { InboundMessage } from './dispatch.js';
 import { ROUTE_CHAT, routeOf } from './dispatch.js';
 import { downloadMedia } from './mediaApi.js';
 import { invokeChat } from './runtimeClient.js';
-import { sendText } from './whatsappClient.js';
+import { sendText, sendTypingIndicator } from './whatsappClient.js';
 import { updateInbound } from './windowTable.js';
 
 export const MAX_TEXT_CHARS = 4096; // R4.2
@@ -116,6 +116,11 @@ export async function handleChatMessage(
   if (msg.timestamp !== null) {
     await updateInbound(customerId, msg.timestamp);
   }
+
+  // Show the "typing..." indicator now that we know we will invoke the runtime,
+  // so the customer sees activity during the (few-second) model turn. Best-
+  // effort: never blocks or fails the reply.
+  await sendTypingIndicator(msg.messageId, accessToken);
 
   // 4. Build the multimodal payload; download supported attachments (R4.8),
   //    flag unsupported ones for a resend nudge (R4.9).
