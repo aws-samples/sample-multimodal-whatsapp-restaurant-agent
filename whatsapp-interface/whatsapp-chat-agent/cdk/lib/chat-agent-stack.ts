@@ -448,25 +448,25 @@ export class ChatAgentStack extends cdk.Stack {
       }),
     );
 
-    // Sid 6 - Bedrock invoke for Amazon Nova Pro via the Converse API. Converse
-    // calls InvokeModel / InvokeModelWithResponseStream under the hood. Scoped
-    // to the Nova Pro model family plus inference profiles (Nova Pro is reached
-    // through a cross-region inference profile such as us.amazon.nova-pro-v1:0).
+    // Sid 6 - Bedrock invoke for Amazon Nova 2 Lite via the Converse API.
+    // Converse calls InvokeModel / InvokeModelWithResponseStream under the hood.
+    // Scoped to the Nova 2 Lite model family plus inference profiles (Nova 2 Lite
+    // is reached through a cross-region inference profile, us.amazon.nova-2-lite-v1:0).
     // This is the multimodal text path, NOT the Sonic bidirectional stream, so
     // bedrock:InvokeModelWithBidirectionalStream is intentionally NOT granted.
     runtimeRole.addToPolicy(
       new iam.PolicyStatement({
-        sid: 'BedrockInvokeNovaPro',
+        sid: 'BedrockInvokeNovaChat',
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
         resources: [
-          // Nova Pro foundation model family in this region.
-          cdk.Fn.sub('arn:${Partition}:bedrock:${R}::foundation-model/amazon.nova-pro*', {
+          // Nova 2 Lite foundation model family in this region.
+          cdk.Fn.sub('arn:${Partition}:bedrock:${R}::foundation-model/amazon.nova-2-lite*', {
             Partition: cdk.Aws.PARTITION,
             R: cdk.Aws.REGION,
           }),
-          // Nova Pro foundation model in any region the inference profile routes
-          // to (cross-region inference profiles fan out to peer regions).
-          cdk.Fn.sub('arn:${Partition}:bedrock:*::foundation-model/amazon.nova-pro*', {
+          // Nova 2 Lite foundation model in any region the inference profile
+          // routes to (cross-region inference profiles fan out to peer regions).
+          cdk.Fn.sub('arn:${Partition}:bedrock:*::foundation-model/amazon.nova-2-lite*', {
             Partition: cdk.Aws.PARTITION,
           }),
           // Inference profiles owned by this account/region.
@@ -545,6 +545,11 @@ export class ChatAgentStack extends cdk.Stack {
         DEPLOYMENT_PREFIX: prefix,
         AGENTCORE_GATEWAY_URL: agentCoreGatewayUrl.valueAsString,
         SHARED_MEMORY_ARN: sharedMemoryArn.valueAsString,
+        // Tie the runtime resource to the agent source hash so a rebuilt image
+        // forces a runtime UPDATE (image re-pull). Without this the containerUri
+        // stays ":latest" unchanged, CFN sees no diff, and AgentCore keeps
+        // serving the OLD image after a new push.
+        AGENT_SOURCE_VERSION: cdk.Fn.join(',', deployment.objectKeys),
       },
     });
 
@@ -597,7 +602,7 @@ export class ChatAgentStack extends cdk.Stack {
         {
           id: 'AwsSolutions-IAM5',
           reason:
-            'Runtime role residual wildcards, all scoped or service-mandated: (a) ecr:GetAuthorizationToken is account-scoped by AWS (no resource-level IAM); (b) xray:* and cloudwatch:PutMetricData are service-scoped, and PutMetricData is further conditioned on cloudwatch:namespace = bedrock-agentcore; (c) logs:DescribeLogGroups requires log-group:* (a list API IAM validates against the wildcard), while the create/write log actions are scoped to /aws/bedrock-agentcore/runtimes/*; (d) bedrock:InvokeModel* is scoped to the amazon.nova-pro* foundation-model family plus account/region inference-profiles (Nova Pro is reached via a cross-region inference profile); (e) bedrock-agentcore:InvokeGateway is scoped to gateways in this account/region. The shared-memory statement uses the exact SharedMemoryArn parameter with no wildcard. ECR image pull is scoped to this stack repo.',
+            'Runtime role residual wildcards, all scoped or service-mandated: (a) ecr:GetAuthorizationToken is account-scoped by AWS (no resource-level IAM); (b) xray:* and cloudwatch:PutMetricData are service-scoped, and PutMetricData is further conditioned on cloudwatch:namespace = bedrock-agentcore; (c) logs:DescribeLogGroups requires log-group:* (a list API IAM validates against the wildcard), while the create/write log actions are scoped to /aws/bedrock-agentcore/runtimes/*; (d) bedrock:InvokeModel* is scoped to the amazon.nova-2-lite* foundation-model family plus account/region inference-profiles (Nova 2 Lite is reached via a cross-region inference profile); (e) bedrock-agentcore:InvokeGateway is scoped to gateways in this account/region. The shared-memory statement uses the exact SharedMemoryArn parameter with no wildcard. ECR image pull is scoped to this stack repo.',
         },
       ],
       true,

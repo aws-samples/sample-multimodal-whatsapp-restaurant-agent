@@ -110,7 +110,7 @@ describe('ChatAgentStack synth/config guard', () => {
     );
   });
 
-  test('Bedrock invoke is scoped to Nova Pro and excludes the bidirectional stream', () => {
+  test('Bedrock invoke is scoped to Nova 2 Lite and excludes the bidirectional stream', () => {
     const template = synth();
     const policies = template.findResources('AWS::IAM::Policy');
     type Statement = { Sid?: string; Action?: unknown; Resource?: unknown };
@@ -120,10 +120,14 @@ describe('ChatAgentStack synth/config guard', () => {
     }>) {
       allStatements.push(...policy.Properties.PolicyDocument.Statement);
     }
-    const bedrock = allStatements.filter((s) => s.Sid === 'BedrockInvokeNovaPro');
+    const bedrock = allStatements.filter((s) => s.Sid === 'BedrockInvokeNovaChat');
     expect(bedrock).toHaveLength(1);
     const actions = bedrock[0].Action as string[];
     expect(actions).not.toContain('bedrock:InvokeModelWithBidirectionalStream');
+    // Foundation-model resources target the Nova 2 Lite family (not Nova Pro).
+    const resources = JSON.stringify(bedrock[0].Resource);
+    expect(resources).toContain('amazon.nova-2-lite*');
+    expect(resources).not.toContain('amazon.nova-pro*');
   });
 
   test('deployment-prefix discipline holds on the runtime IAM role name', () => {

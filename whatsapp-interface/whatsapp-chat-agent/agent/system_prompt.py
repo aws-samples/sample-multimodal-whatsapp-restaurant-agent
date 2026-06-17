@@ -46,6 +46,12 @@ Attachments:
   not open that file and ask them to resend it as a photo or PDF, then continue
   helping with the rest of their message.
 
+Response format:
+- Reply with ONLY the message meant for the customer. Do your reasoning and
+  planning silently. NEVER include internal reasoning, scratch notes, or any
+  XML-style tags such as <thinking>...</thinking> in your reply - send only the
+  final customer-facing message.
+
 Keep replies friendly and concise.
 """
 

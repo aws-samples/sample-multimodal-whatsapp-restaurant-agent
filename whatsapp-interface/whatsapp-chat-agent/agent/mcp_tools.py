@@ -113,6 +113,47 @@ def strip_customer_id_from_schemas(mcp_tools: List[Any]) -> List[Any]:
     return mcp_tools
 
 
+def sanitize_tool_names(mcp_tools: List[Any]) -> List[Any]:
+    """Rewrite tool names so Amazon Nova Pro never sees a hyphen (Converse fix).
+
+    Amazon Nova Pro on the Bedrock Converse API emits a malformed tool-use
+    sequence - the model errors with "Model produced invalid sequence as part of
+    ToolUse" - when a tool name contains a hyphen. The AgentCore Gateway always
+    prefixes tool names with the (hyphenated) target name, e.g.
+    ``qsr-backend-api___GeocodeAddress``. Nova Sonic (the voice runtimes)
+    tolerates the hyphen; Nova Pro (this chat runtime) does not.
+
+    Fix: rebuild each MCP tool with a hyphen-free ``name_override`` (hyphens ->
+    underscores) - that is the ONLY name the model sees. The actual gateway call
+    still uses the original ``mcp_tool.name`` because strands' ``MCPAgentTool``
+    keeps the agent-facing name (``tool_name`` / ``tool_spec``) separate from the
+    server-call name (``stream`` uses ``mcp_tool.name``). So no reverse map is
+    needed and the ``customerId`` hook is unaffected (it keys off tool input, not
+    the name).
+    """
+    from strands.tools.mcp.mcp_agent_tool import MCPAgentTool
+
+    out: List[Any] = []
+    renamed = 0
+    for tool in mcp_tools:
+        original = getattr(getattr(tool, "mcp_tool", None), "name", None)
+        if not original or "-" not in original:
+            out.append(tool)
+            continue
+        safe = original.replace("-", "_")
+        out.append(
+            MCPAgentTool(
+                mcp_tool=tool.mcp_tool,
+                mcp_client=tool.mcp_client,
+                name_override=safe,
+                timeout=getattr(tool, "timeout", None),
+            )
+        )
+        renamed += 1
+    logger.info("mcp_tools names sanitized for Converse (hyphen -> underscore)", extra={"renamed": renamed})
+    return out
+
+
 def _import_before_tool_event() -> Any:
     """Import the Strands "before tool invocation" hook event class.
 

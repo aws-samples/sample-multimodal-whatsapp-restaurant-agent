@@ -52,8 +52,13 @@ logger = logging.getLogger(__name__)
 # container retains context; a cold start or a second instance starts fresh.
 _SESSIONS = InProcessSessionStore()
 
-# Amazon Nova Pro via a cross-region inference profile (configurable).
-NOVA_PRO_MODEL_ID = os.environ.get("NOVA_PRO_MODEL_ID", "us.amazon.nova-pro-v1:0")
+# Chat model via a cross-region inference profile (configurable). Default is
+# Amazon Nova 2 Lite - a newer generation than Nova 1 Pro, multimodal
+# (text/image/video) and tool-capable via Converse. Override with NOVA_CHAT_MODEL_ID.
+NOVA_CHAT_MODEL_ID = os.environ.get(
+    "NOVA_CHAT_MODEL_ID",
+    os.environ.get("NOVA_PRO_MODEL_ID", "us.amazon.nova-2-lite-v1:0"),
+)
 
 # Formats Amazon Nova Pro accepts as Converse content blocks. Anything else is
 # skipped and reported as unsupported (R4.9).
@@ -67,6 +72,38 @@ _IMAGE_FORMAT_ALIASES = {"jpg": "jpeg"}
 # Converse document names allow alphanumerics, spaces, hyphens, parentheses, and
 # square brackets. Sanitize anything else so the API does not reject the block.
 _DOC_NAME_SAFE = re.compile(r"[^a-zA-Z0-9 \-\(\)\[\]]")
+
+# Amazon Nova Pro sometimes wraps its chain-of-thought in <thinking>...</thinking>
+# tags. That internal reasoning must NEVER reach the customer. We strip well-
+# formed blocks, then any stray/unclosed thinking tags, as a hard guarantee
+# independent of the system-prompt instruction (R4: customer-facing replies only).
+_THINKING_BLOCK = re.compile(r"<\s*thinking\b[^>]*>.*?<\s*/\s*thinking\s*>", re.IGNORECASE | re.DOTALL)
+_THINKING_OPEN_TO_END = re.compile(r"<\s*thinking\b[^>]*>.*\Z", re.IGNORECASE | re.DOTALL)
+_STRAY_THINKING_TAG = re.compile(r"<\s*/?\s*thinking\b[^>]*>", re.IGNORECASE)
+
+
+def strip_internal_reasoning(text: str) -> str:
+    """Remove any <thinking> reasoning the model may have leaked (pure, testable).
+
+    1. Drop complete <thinking>...</thinking> blocks (any case, across newlines).
+    2. Drop a dangling <thinking> with no close (to end of text) - otherwise an
+       unterminated tag would leak the whole reasoning tail.
+    3. Drop any leftover stray thinking tags.
+    Collapses the blank lines a removed block leaves behind.
+
+    ASSUMPTION (revisit after testing): a reply is never made up of ONLY a
+    <thinking> block, so the stripped result is never empty. If that turns out to
+    be false in the field, add a safe fallback message here instead of returning
+    an empty string.
+    """
+    if not text:
+        return text
+    cleaned = _THINKING_BLOCK.sub("", text)
+    cleaned = _THINKING_OPEN_TO_END.sub("", cleaned)
+    cleaned = _STRAY_THINKING_TAG.sub("", cleaned)
+    # Tidy up whitespace left where the block was.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _resolve_memory_id() -> str:
@@ -239,12 +276,16 @@ def _invoke_agent(
     from strands.models import BedrockModel
     from strands.tools.mcp.mcp_client import MCPClient
 
-    model = BedrockModel(model_id=NOVA_PRO_MODEL_ID, region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    model = BedrockModel(model_id=NOVA_CHAT_MODEL_ID, region_name=os.environ.get("AWS_REGION", "us-east-1"))
 
     with MCPClient(mcp_tools.for_customer(customer_id)) as client:
         tools = client.list_tools_sync()
         tools = mcp_tools.apply_basepath_workaround(tools)
         tools = mcp_tools.strip_customer_id_from_schemas(tools)
+        # Nova Pro (Converse) rejects hyphenated tool names with "Model produced
+        # invalid sequence as part of ToolUse"; rename them hyphen-free for the
+        # model while the gateway call keeps the original name (R4.7).
+        tools = mcp_tools.sanitize_tool_names(tools)
 
         agent = Agent(
             model=model,
@@ -255,7 +296,7 @@ def _invoke_agent(
         )
         result = agent(content_blocks)
         updated = getattr(agent, "messages", None)
-        return str(result).strip(), updated
+        return strip_internal_reasoning(str(result).strip()), updated
 
 
 # --- AgentCore Runtime HTTP surface -----------------------------------------
