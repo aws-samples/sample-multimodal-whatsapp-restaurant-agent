@@ -14,7 +14,7 @@ const GRAPH_BASE = `https://graph.facebook.com/${GRAPH_VERSION}`;
 // Low-level request. Returns { status, body } where body is parsed JSON (or {}).
 // `token` is the bearer access token - it is placed in the Authorization header
 // ONLY and is never interpolated into the URL or logged.
-async function graphRequest(method, path, { token, query, form } = {}) {
+async function graphRequest(method, path, { token, query, form, json } = {}) {
   const url = new URL(`${GRAPH_BASE}${path}`);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
@@ -23,7 +23,12 @@ async function graphRequest(method, path, { token, query, form } = {}) {
   }
   const headers = { Authorization: `Bearer ${token}` };
   let bodyInit;
-  if (form) {
+  if (json !== undefined) {
+    // Nested-object bodies (e.g. the calling settings object) must be JSON; a
+    // urlencoded form cannot represent them.
+    headers['Content-Type'] = 'application/json';
+    bodyInit = JSON.stringify(json);
+  } else if (form) {
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(form)) {
@@ -112,4 +117,20 @@ export function createMessageTemplate(token, wabaId, template) {
       components: JSON.stringify(template.components),
     },
   });
+}
+
+// GET /{phone-number-id}/settings - read the number's settings, including the
+// `calling` object (status, call_hours, codecs, ...). Used to confirm calling
+// enablement.
+export function getPhoneNumberSettings(token, phoneNumberId) {
+  return graphRequest('GET', `/${phoneNumberId}/settings`, { token });
+}
+
+// POST /{phone-number-id}/settings - enable (or update) the WhatsApp Calling API
+// on the number. Calling is OFF by default on every number; this turns it on so
+// customers can place inbound (user-initiated) calls. Body is JSON with a nested
+// `calling` object. Pass extra fields (call_hours, audio.additional_codecs,
+// callback_permission_status, ...) by overriding `calling`.
+export function setCallingSettings(token, phoneNumberId, calling = { status: 'ENABLED' }) {
+  return graphRequest('POST', `/${phoneNumberId}/settings`, { token, json: { calling } });
 }

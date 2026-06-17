@@ -472,8 +472,35 @@ async function postDeploy() {
   reportGraph('subscribe WABA', sub);
 
   section('Calling API');
-  log('Enabling the Calling API on the number is not reliably exposed via the Graph API.');
-  log('If the Call channel does not work, enable calling in the console: WhatsApp -> API Setup -> Calling.');
+  // Enable INBOUND (user-initiated) voice calls on the number so customers can
+  // tap "Call" in the chat. Calling is OFF by default on every WhatsApp number;
+  // a single POST to the number's settings turns it on - no console step. (The
+  // 2,000/day messaging-tier prerequisite is waived for test numbers; for a
+  // production number it must be met first or this call returns an error.)
+  const phoneNumberId = await resolveValue(
+    'WHATSAPP_PHONE_NUMBER_ID',
+    cfg.WHATSAPP_PHONE_NUMBER_ID,
+    'Phone Number ID',
+    () =>
+      input({
+        message: 'Phone Number ID (to enable calling):',
+        validate: (v) => /^\d+$/.test(v.trim()) || 'Phone Number ID is numeric',
+      }),
+  );
+  const calling = await graph.setCallingSettings(token, phoneNumberId, { status: 'ENABLED' });
+  reportGraph('enable Calling API', calling);
+  // Read the settings back so the operator sees the live status (and so a silent
+  // partial failure surfaces). Best-effort: a read failure does not fail setup.
+  const settings = await graph.getPhoneNumberSettings(token, phoneNumberId);
+  const callStatus = settings?.body?.calling?.status;
+  if (callStatus) {
+    log(`Calling status on the number is now: ${callStatus}.`);
+  } else if (calling.status < 200 || calling.status >= 300) {
+    log('Calling could not be enabled via the API. The usual cause is the number');
+    log('not yet meeting the messaging tier (>=2,000/day) required for calling on a');
+    log('production number; test numbers are exempt. The inbound call channel will');
+    log('not work until calling shows ENABLED here.');
+  }
 
   const wantTemplate = await confirm({
     message: 'Create a sample Utility order-confirmation template now?',
