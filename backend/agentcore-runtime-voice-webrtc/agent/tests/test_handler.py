@@ -236,17 +236,42 @@ class _FakeMcp:
         self.exited = True
 
 
+class _FakeMemory:
+    """Stand-in for SharedMemoryClient: records read/write calls."""
+
+    def __init__(self, configured: bool = True) -> None:
+        self.configured = configured
+        self.reads: list = []
+        self.writes: list = []
+
+    def read_long_term(self, customer_id, *a, **k):
+        self.reads.append(customer_id)
+
+        class _R:
+            insights: list = []
+            ok = True
+            error = None
+
+        return _R()
+
+    def write_events(self, customer_id, session_id, turns):
+        self.writes.append((customer_id, session_id, turns))
+        return True
+
+
 def _install_sonic(monkeypatch, *, build_raises=False):
     """Mock the Nova Sonic collaborators so run_offer is unit-testable without
     Strands/aiortc: build_agent, make_inbound_pump, receive_pump, keepalive_loop,
-    the output track, and the (SSM-backed) customer derivation."""
+    the output track, and the (SSM-backed) customer derivation. build_agent now
+    returns a 3-tuple (mcp, agent, memory)."""
     agent = _FakeAgent()
     mcp = _FakeMcp()
+    memory = _FakeMemory()
 
     async def _build(session, voice_id="tiffany"):
         if build_raises:
             raise RuntimeError("boom")
-        return mcp, agent
+        return mcp, agent, memory
 
     async def _noop(*a, **k):
         return None
@@ -259,7 +284,7 @@ def _install_sonic(monkeypatch, *, build_raises=False):
     monkeypatch.setattr(
         handler.pstn_customer, "derive_for_session", lambda raw: ("wa-test0000000000", True, "")
     )
-    return agent, mcp
+    return agent, mcp, memory
 
 
 @pytest.fixture(autouse=True)
@@ -275,7 +300,7 @@ async def test_offer_builds_agent_holds_pc_and_registers(monkeypatch):
     _install_turn(monkeypatch, SAMPLE_ICE)
     capture: dict = {}
     pc = _install_answerer(monkeypatch, sdp="v=0\r\nHELD\r\n", capture=capture)
-    agent, mcp = _install_sonic(monkeypatch)
+    agent, mcp, memory = _install_sonic(monkeypatch)
 
     out = await handler.run_offer(OFFER_PAYLOAD)
 
@@ -322,7 +347,7 @@ async def test_offer_agent_build_failure_returns_error(monkeypatch):
 async def test_disconnect_tears_down_and_deregisters(monkeypatch):
     _install_turn(monkeypatch, SAMPLE_ICE)
     pc = _install_answerer(monkeypatch, capture={})
-    agent, mcp = _install_sonic(monkeypatch)
+    agent, mcp, memory = _install_sonic(monkeypatch)
     offered = await handler.run_offer(OFFER_PAYLOAD)
     pc_id = offered["pc_id"]
     assert pc_id in handler._PCS
@@ -346,6 +371,62 @@ async def test_disconnect_unknown_pc_is_idempotent():
 async def test_disconnect_missing_pc_id_returns_error():
     out = await handler.run_disconnect({"action": "disconnect", "data": {}})
     assert out["error"] == "bad_disconnect"
+
+
+@pytest.mark.asyncio
+async def test_offer_identified_then_disconnect_writes_memory(monkeypatch):
+    """An offer carrying data.customer_id builds an IDENTIFIED session; on
+    disconnect the accumulated transcript is written to shared memory keyed by
+    that customer_id (session_id == customer_id)."""
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch, capture={})
+    agent, mcp, memory = _install_sonic(monkeypatch)
+
+    payload = {
+        "action": "offer",
+        "call_id": "call-id-1",
+        "data": {
+            "sdp": OFFER_SDP,
+            "type": "offer",
+            "turnOnly": True,
+            "customer_id": "wa-abcdef0123456789",
+        },
+    }
+    offered = await handler.run_offer(payload)
+    pc_id = offered["pc_id"]
+    bundle = handler._PCS[pc_id]
+    # Identified (not anonymous) because customer_id was threaded in.
+    assert bundle.session.anonymous is False
+    assert bundle.session.customer_id == "wa-abcdef0123456789"
+    # Simulate the receive pump having captured a couple of final turns.
+    bundle.transcript.extend([("USER", "a small fries"), ("ASSISTANT", "Coming right up!")])
+
+    out = await handler.run_disconnect({"action": "disconnect", "data": {"pc_id": pc_id}})
+    assert out["status"] == "disconnected"
+
+    assert len(memory.writes) == 1
+    cid, sid, turns = memory.writes[0]
+    assert cid == "wa-abcdef0123456789"
+    assert sid == "wa-abcdef0123456789"  # session_id == customer_id (R5.1)
+    assert [(t.role, t.text) for t in turns] == [
+        ("USER", "a small fries"),
+        ("ASSISTANT", "Coming right up!"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_anonymous_does_not_write_memory(monkeypatch):
+    """An anonymous offer (no customer_id) must NOT write to shared memory."""
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch, capture={})
+    agent, mcp, memory = _install_sonic(monkeypatch)
+
+    offered = await handler.run_offer(OFFER_PAYLOAD)  # no data.customer_id
+    pc_id = offered["pc_id"]
+    handler._PCS[pc_id].transcript.append(("USER", "hi"))
+
+    await handler.run_disconnect({"action": "disconnect", "data": {"pc_id": pc_id}})
+    assert memory.writes == []
 
 
 @pytest.mark.asyncio

@@ -17,9 +17,14 @@ audio I/O is rewired:
 
 Strands is imported LAZILY inside each function (mirroring mcp_tools) so this
 module - and `import handler` - load for unit tests without the SDK present; the
-SDK only exists inside the container. Shared AgentCore Memory (read-at-start /
-write-at-end) is intentionally NOT wired here yet - it is the immediate follow-up
-task (see tasks.md 16.4).
+SDK only exists inside the container.
+
+Shared AgentCore Memory is wired here (Task 16.4): ``build_agent`` reads the
+caller's long-term insights and appends them to the resolved system prompt
+(identified callers only), and ``receive_pump`` accumulates the final
+transcript turns so ``handler.run_disconnect`` can write them back at call end.
+Memory is the SAME shared resource the Chat/VoiceNotes runtimes use, so the same
+``customer_id`` recalls across all three channels.
 """
 from __future__ import annotations
 
@@ -27,16 +32,34 @@ import asyncio
 import base64
 import logging
 import os
-from typing import Any, Callable, List, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 import mcp_tools
 import prompt_renderer
 import system_prompt
+from memory_client import SharedMemoryClient
 from protocol import MODEL_CHANNELS, MODEL_INPUT_SAMPLE_RATE, MODEL_OUTPUT_SAMPLE_RATE
 from session import Session
 from transcode import InboundResampler
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_memory_id() -> str:
+    """Resolve the bare AgentCore Memory id for data-plane calls.
+
+    Prefers ``WA_MEMORY_ID`` (bare id) if set; otherwise derives it from
+    ``SHARED_MEMORY_ARN`` (which the Call stack DOES set) by taking the segment
+    after the final '/' (``arn:...:memory/<id>`` -> ``<id>``). Returns "" when
+    neither is available, in which case ``SharedMemoryClient`` degrades to a
+    no-op (memory not wired)."""
+    explicit = os.environ.get("WA_MEMORY_ID")
+    if explicit:
+        return explicit
+    arn = os.environ.get("SHARED_MEMORY_ARN", "")
+    if arn:
+        return arn.rsplit("/", 1)[-1]
+    return ""
 
 # 20 ms @ 16 kHz mono L16 = 320 samples = 640 bytes of zeros (one silence frame).
 _SILENCE_FRAME = b"\x00" * (int(MODEL_INPUT_SAMPLE_RATE * 0.02) * MODEL_CHANNELS * 2)
@@ -61,13 +84,18 @@ def _discover_tools(customer_id: str) -> Tuple[Any, List[Any]]:
     return client, tools
 
 
-async def build_agent(session: Session, voice_id: str = "tiffany") -> Tuple[Any, Any]:
+async def build_agent(
+    session: Session, voice_id: str = "tiffany"
+) -> Tuple[Any, Any, SharedMemoryClient]:
     """Build + start a Nova 2 Sonic BidiAgent for one call.
 
-    Resolves the per-call system prompt, constructs the model at 16 kHz in/out,
-    discovers AgentCore Gateway MCP tools, starts the agent, and primes it with
-    "Hi" so Nova Sonic greets first. Returns (mcp_client, agent); the caller owns
-    the MCPClient and must close it on teardown."""
+    Resolves the per-call system prompt, reads the caller's long-term insights
+    from shared AgentCore Memory and appends them to the prompt (identified
+    callers only), constructs the model at 16 kHz in/out, discovers AgentCore
+    Gateway MCP tools, starts the agent, and primes it with "Hi" so Nova Sonic
+    greets first. Returns (mcp_client, agent, memory); the caller owns the
+    MCPClient (close on teardown) and uses the memory client to write the
+    transcript at call end."""
     from strands.experimental.bidi.agent import BidiAgent  # lazy: container-only
     from strands.experimental.bidi.models.nova_sonic import BidiNovaSonicModel
 
@@ -103,6 +131,29 @@ async def build_agent(session: Session, voice_id: str = "tiffany") -> Tuple[Any,
         )
         resolved_prompt = system_prompt.build(session)
 
+    # Shared AgentCore Memory: read the caller's long-term insights and append
+    # them to the resolved prompt. Identified callers only (an anonymous call
+    # has no stable id to recall). read_long_term never hard-fails (R18.7); the
+    # blocking boto3 call is offloaded so it does not stall the event loop.
+    memory = SharedMemoryClient(memory_id=_resolve_memory_id())
+    if not session.anonymous and session.customer_id and memory.configured:
+        try:
+            read = await asyncio.to_thread(memory.read_long_term, session.customer_id)
+        except Exception as exc:  # noqa: BLE001 - never block the call on memory
+            logger.warning("call memory read raised (ignored)", extra={"err": str(exc)})
+            read = None
+        if read is not None and read.insights:
+            resolved_prompt = system_prompt.append_insights(resolved_prompt, read.insights)
+            logger.info(
+                "call: injected memory insights",
+                extra={"call_id": session.call_id, "count": len(read.insights)},
+            )
+        elif read is not None and not read.ok:
+            logger.info(
+                "call: no prior insights",
+                extra={"call_id": session.call_id, "reason": read.error},
+            )
+
     agent = BidiAgent(
         model=model,
         tools=tools,
@@ -112,7 +163,7 @@ async def build_agent(session: Session, voice_id: str = "tiffany") -> Tuple[Any,
     await agent.start()
     await agent.send("Hi")  # Nova Sonic greets first (system-prompt greeting).
     logger.info("call bidi agent started + primed", extra={"call_id": session.call_id})
-    return mcp_client, agent
+    return mcp_client, agent, memory
 
 
 def make_inbound_pump(agent: Any) -> Callable[[Any], Any]:
@@ -146,10 +197,18 @@ def make_inbound_pump(agent: Any) -> Callable[[Any], Any]:
     return on_track
 
 
-async def receive_pump(agent: Any, output_track: Any, session: Session) -> None:
+async def receive_pump(
+    agent: Any,
+    output_track: Any,
+    session: Session,
+    turns: Optional[List[Tuple[str, str]]] = None,
+) -> None:
     """Drain agent.receive(): Sonic audio -> output track; barge-in -> clear.
 
-    Never raises - logs and returns on close/error so handler teardown runs."""
+    When ``turns`` is provided, final transcript events are appended to it as
+    ``(role, text)`` pairs (role normalized to USER/ASSISTANT) so the handler
+    can write the conversation back to shared memory at call end. Never raises -
+    logs and returns on close/error so handler teardown runs."""
     from strands.experimental.bidi.types.events import (  # lazy: container-only
         BidiAudioStreamEvent,
         BidiConnectionCloseEvent,
@@ -179,14 +238,19 @@ async def receive_pump(agent: Any, output_track: Any, session: Session) -> None:
                 )
             elif isinstance(event, BidiTranscriptStreamEvent):
                 if getattr(event, "is_final", False):
+                    role = getattr(event, "role", "?")
+                    text = (getattr(event, "text", "") or "")[:200]
                     logger.info(
                         "transcript",
                         extra={
                             "call_id": session.call_id,
-                            "role": getattr(event, "role", "?"),
-                            "text": (getattr(event, "text", "") or "")[:200],
+                            "role": role,
+                            "text": text,
                         },
                     )
+                    if turns is not None and text.strip():
+                        norm = "ASSISTANT" if str(role).lower() == "assistant" else "USER"
+                        turns.append((norm, (getattr(event, "text", "") or "")))
             elif isinstance(event, ToolUseStreamEvent):
                 logger.info("tool use", extra={"call_id": session.call_id})
             elif isinstance(event, BidiResponseCompleteEvent):

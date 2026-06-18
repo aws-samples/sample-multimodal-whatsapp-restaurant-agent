@@ -69,6 +69,7 @@ import single_shot_answerer
 import sonic_call
 import transcode
 import pstn_customer
+from memory_client import Turn
 from session import Session
 
 logging.basicConfig(
@@ -100,6 +101,12 @@ class _CallBundle:
     mcp_client: Any = None
     output_track: Any = None
     tasks: List[Any] = field(default_factory=list)
+    # Identity + memory: ``session`` carries the customer_id, ``memory`` is the
+    # shared AgentCore Memory client, and ``transcript`` accumulates (role, text)
+    # turns that run_disconnect writes back at call end (Task 16.4).
+    session: Any = None
+    memory: Any = None
+    transcript: List[Any] = field(default_factory=list)
 
     async def teardown(self) -> None:
         """Best-effort teardown: cancel pumps, stop the agent, close MCP + pc."""
@@ -155,9 +162,11 @@ async def run_offer(payload: dict) -> dict:
     registers the whole bundle by pc_id in ``_PCS`` so ``disconnect`` can tear it
     down. Never raises: failures degrade to an ``{"error": ...}`` dict.
 
-    Identity note: the caller's phone is not threaded into the runtime yet, so the
-    Sonic session is built anonymously (no loyalty/memory). Wiring caller identity
-    + shared AgentCore Memory is the immediate follow-up (tasks.md 16.4)."""
+    Identity: the webhook worker threads the caller's pseudonymous ``wa-``
+    customer_id in ``data.customer_id`` (never the raw phone - that is PII). When
+    present the Sonic session is built identified, so shared AgentCore Memory
+    reads the caller's insights at start and writes the transcript at end. With
+    no customer_id the session stays anonymous (no memory)."""
     call_id = (payload.get("call_id") or "").strip()
     data = payload.get("data") or {}
     offer_sdp = data.get("sdp")
@@ -174,11 +183,16 @@ async def run_offer(payload: dict) -> dict:
     if not ice_servers:
         return {"error": "no_turn_servers", "call_id": call_id}
 
-    # Anonymous session for now (caller identity + memory are the follow-up).
-    try:
-        customer_id, anonymous, from_last4 = pstn_customer.derive_for_session("")
-    except Exception:  # noqa: BLE001
-        customer_id, anonymous, from_last4 = pstn_customer.derive("", b"")
+    # Identity: prefer the worker-derived wa- customer_id (identified caller);
+    # otherwise fall back to an anonymous session (no memory continuity).
+    data_customer_id = (data.get("customer_id") or "").strip()
+    if data_customer_id:
+        customer_id, anonymous, from_last4 = data_customer_id, False, ""
+    else:
+        try:
+            customer_id, anonymous, from_last4 = pstn_customer.derive_for_session("")
+        except Exception:  # noqa: BLE001
+            customer_id, anonymous, from_last4 = pstn_customer.derive("", b"")
     session = Session(
         call_id=call_id,
         raw_from="",
@@ -187,16 +201,23 @@ async def run_offer(payload: dict) -> dict:
         customer_id=customer_id,
     )
 
-    # Build + start the Nova Sonic agent (model + MCP tools + prompt + prime).
+    # Build + start the Nova Sonic agent (model + MCP tools + prompt + memory).
     try:
-        mcp_client, agent = await sonic_call.build_agent(session)
+        mcp_client, agent, memory = await sonic_call.build_agent(session)
     except Exception as exc:  # noqa: BLE001
         logger.exception("call %s: agent build failed", call_id or "?")
         return {"error": "agent_failed", "call_id": call_id, "detail": str(exc)}
 
     output_track = transcode.SonicOutputTrack()
     on_track = sonic_call.make_inbound_pump(agent)
-    bundle = _CallBundle(pc=None, agent=agent, mcp_client=mcp_client, output_track=output_track)
+    bundle = _CallBundle(
+        pc=None,
+        agent=agent,
+        mcp_client=mcp_client,
+        output_track=output_track,
+        session=session,
+        memory=memory,
+    )
 
     try:
         result = await single_shot_answerer.create_single_shot_answer(
@@ -217,7 +238,8 @@ async def run_offer(payload: dict) -> dict:
     # Spawn the outbound (Sonic -> track) pump and the idle keepalive.
     bundle.tasks = [
         asyncio.create_task(
-            sonic_call.receive_pump(agent, output_track, session), name=f"recv-{pc_id}"
+            sonic_call.receive_pump(agent, output_track, session, bundle.transcript),
+            name=f"recv-{pc_id}",
         ),
         asyncio.create_task(sonic_call.keepalive_loop(agent), name=f"keepalive-{pc_id}"),
     ]
@@ -236,8 +258,45 @@ async def run_offer(payload: dict) -> dict:
     }
 
 
+async def _maybe_write_memory(bundle: "_CallBundle") -> None:
+    """Write the call's transcript to shared AgentCore Memory at call end.
+
+    Identified callers only (an anonymous call has no stable id to persist
+    against). session_id == customer_id mirrors the Chat/VoiceNotes convention
+    (R5.1) so consolidation groups all of a customer's interactions together.
+    Best-effort: a write failure never breaks teardown (R18.7). The blocking
+    boto3 call is offloaded so it does not stall the event loop."""
+    session = getattr(bundle, "session", None)
+    memory = getattr(bundle, "memory", None)
+    if memory is None or session is None:
+        return
+    if getattr(session, "anonymous", True) or not getattr(session, "customer_id", ""):
+        return
+    if not getattr(memory, "configured", False):
+        return
+    turns = [
+        Turn(role=role, text=text)
+        for (role, text) in (bundle.transcript or [])
+        if text and text.strip()
+    ]
+    if not turns:
+        return
+    try:
+        await asyncio.to_thread(
+            memory.write_events, session.customer_id, session.customer_id, turns
+        )
+        logger.info(
+            "call: wrote %d transcript turns to shared memory", len(turns)
+        )
+    except Exception as exc:  # noqa: BLE001 - memory write never breaks teardown
+        logger.warning("call memory write failed (ignored): %s", exc)
+
+
 async def run_disconnect(payload: dict) -> dict:
-    """Tear down the held call for a pc_id (Task 17 terminate path)."""
+    """Tear down the held call for a pc_id (Task 17 terminate path).
+
+    Writes the conversation transcript back to shared memory (identified
+    callers) before tearing down the agent + peer connection."""
     data = payload.get("data") or {}
     pc_id = (data.get("pc_id") or "").strip()
     if not pc_id:
@@ -249,6 +308,7 @@ async def run_disconnect(payload: dict) -> dict:
         logger.info("disconnect: pc_id=%s not found (already closed?)", pc_id)
         return {"pc_id": pc_id, "status": "not_found"}
 
+    await _maybe_write_memory(bundle)
     await bundle.teardown()
     logger.info("disconnect: pc %s torn down (live pcs=%d)", pc_id, len(_PCS))
     return {"pc_id": pc_id, "status": "disconnected"}

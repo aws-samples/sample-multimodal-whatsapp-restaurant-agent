@@ -4,12 +4,19 @@ Injects `customer_id` so Nova Sonic tool-use carries it on every call
 (R8 step 5, P11). Branches on `session.anonymous` for a mild greeting
 difference.
 
+`append_insights()` augments an already-resolved prompt with the caller's
+long-term memory insights (read at call start from the shared AgentCore
+Memory). It is additive on purpose: the call runtime resolves its base prompt
+from the remote prompt-renderer Lambda (loyalty/profile context), so memory
+insights are appended on top rather than baked into a fresh template the way
+the VoiceNotes runtime does it (Task 16.4).
+
 Out of scope for MVP: the reference project's COMPANY_NAME branding
 block — telephony-agent prompts stay brand-agnostic in r1.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:  # pragma: no cover — type-only
     from session import Session
@@ -70,3 +77,26 @@ Customer ID: {customer_id}
 - Do not mention locationId, orderId, itemId, customerId, or any field
   ending in 'Id' to the caller. Use human-readable names instead.
 """
+
+
+def append_insights(prompt: str, insights: Optional[list[str]] = None) -> str:
+    """Return ``prompt`` augmented with long-term memory ``insights``.
+
+    ``insights`` are the consolidated strings read from the shared AgentCore
+    Memory for this caller at call start. They are appended as a context block
+    the assistant may use to greet a returning caller and recall their usual
+    order. An empty/missing list (or one with only blank strings) returns the
+    prompt unchanged — the no-prior-context path. Pure and deterministic.
+    """
+    if not insights:
+        return prompt
+    lines = "\n".join(f"- {s}" for s in insights if s and s.strip())
+    if not lines:
+        return prompt
+    return (
+        prompt
+        + "\n\n# WHAT YOU REMEMBER ABOUT THIS CALLER (from previous chats and "
+        "calls — use it naturally, do not read it back verbatim):\n"
+        + lines
+        + "\n"
+    )
