@@ -38,6 +38,10 @@ import {
   type OrderConfirmation,
 } from '../lambda/webhook-handler/lib/orderConfirmation';
 import { chooseVoiceReply, COULD_NOT_UNDERSTAND, COULD_NOT_DOWNLOAD } from '../lambda/webhook-handler/lib/audioHandler';
+import { callSessionId, type CallAnswer } from '../lambda/webhook-handler/lib/runtimeClient';
+import { handleCallEvent, type CallDeps } from '../lambda/webhook-handler/lib/callsSignaling';
+import type { CallEvent } from '../lambda/webhook-handler/lib/dispatch';
+import type { CallMapping } from '../lambda/webhook-handler/lib/callMap';
 
 const RUNS = { numRuns: 100 };
 
@@ -503,5 +507,178 @@ describe('VoiceNotes reply selection (R7.6/R7.7/R7.8)', () => {
       ),
       RUNS,
     );
+  });
+});
+
+
+// --- Task 17: calls signaling proxy (Property 10 + units) ------------------
+
+function connectEvent(id: string): CallEvent {
+  return { id, event: 'connect', from: '15551230000', to: '15559990000', sdpType: 'offer', sdp: 'v=0\r\noffer\r\n', status: '' };
+}
+function terminateEvent(id: string): CallEvent {
+  return { id, event: 'terminate', from: '15551230000', to: '15559990000', sdpType: '', sdp: '', status: 'COMPLETED' };
+}
+
+interface FakeBundle {
+  deps: CallDeps;
+  store: Map<string, CallMapping>;
+  offers: Array<{ sessionId: string; callId: string }>;
+  disconnects: Array<{ sessionId: string; pcId: string }>;
+  actions: Array<{ callId: string; action: string }>;
+}
+
+function makeFakeDeps(overrides: Partial<CallDeps> = {}): FakeBundle {
+  const store = new Map<string, CallMapping>();
+  const offers: FakeBundle['offers'] = [];
+  const disconnects: FakeBundle['disconnects'] = [];
+  const actions: FakeBundle['actions'] = [];
+  const deps: CallDeps = {
+    invokeCallOffer: async (sessionId, callId, _sdp): Promise<CallAnswer | null> => {
+      offers.push({ sessionId, callId });
+      return { call_id: callId, pc_id: `pc-${callId}`, type: 'answer', sdp: 'v=0\r\nANSWER\r\n' };
+    },
+    invokeCallDisconnect: async (sessionId, pcId): Promise<void> => {
+      disconnects.push({ sessionId, pcId });
+    },
+    sendCallAction: async (callId, action): Promise<boolean> => {
+      actions.push({ callId, action });
+      return true;
+    },
+    putMapping: async (callId, m): Promise<boolean> => {
+      store.set(callId, m);
+      return true;
+    },
+    getMapping: async (callId): Promise<CallMapping | null> => store.get(callId) ?? null,
+    deleteMapping: async (callId): Promise<void> => {
+      store.delete(callId);
+    },
+    deriveCustomerId: async (_from): Promise<string> => 'wa-0123456789abcdef',
+    ...overrides,
+  };
+  return { deps, store, offers, disconnects, actions };
+}
+
+describe('callSessionId (pure)', () => {
+  test('deterministic, formatted, >= 33 chars', () => {
+    fc.assert(
+      fc.property(fc.string({ minLength: 1, maxLength: 64 }), (id) => {
+        const s = callSessionId(id);
+        expect(s).toBe(callSessionId(id)); // deterministic
+        expect(s.length).toBeGreaterThanOrEqual(33);
+        expect(/^wa-call-[0-9a-f]{32}$/.test(s)).toBe(true);
+      }),
+      RUNS,
+    );
+  });
+
+  test('distinct call ids map to distinct session ids', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.string({ minLength: 1, maxLength: 24 }), { minLength: 2, maxLength: 12 }),
+        (ids) => {
+          const sids = new Set(ids.map(callSessionId));
+          expect(sids.size).toBe(ids.length);
+        },
+      ),
+      RUNS,
+    );
+  });
+});
+
+describe('Property 10: calls signaling mapping integrity', () => {
+  test('each connect creates exactly one mapping; terminate disconnects the matching session; no two active calls share a session-id', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.uniqueArray(fc.string({ minLength: 1, maxLength: 20 }), { minLength: 1, maxLength: 8 }),
+        async (callIds) => {
+          const fb = makeFakeDeps();
+          // Connect every call.
+          for (const id of callIds) {
+            await handleCallEvent(connectEvent(id), 'tok', fb.deps);
+          }
+          // Exactly one mapping per call, keyed by call-id.
+          expect(fb.store.size).toBe(callIds.length);
+          // Exactly one offer per call; session id == callSessionId(callId).
+          expect(fb.offers.length).toBe(callIds.length);
+          for (const id of callIds) {
+            const m = fb.store.get(id)!;
+            expect(m).toBeDefined();
+            expect(m.sessionId).toBe(callSessionId(id));
+            expect(m.pcId).toBe(`pc-${id}`);
+          }
+          // No two active calls share a session-id.
+          const sids = new Set([...fb.store.values()].map((m) => m.sessionId));
+          expect(sids.size).toBe(callIds.length);
+          // Each connect issued exactly one accept (pre_accept is skipped).
+          for (const id of callIds) {
+            const a = fb.actions.filter((x) => x.callId === id).map((x) => x.action);
+            expect(a).toEqual(['accept']);
+          }
+
+          // Terminate every call: disconnect routed to the matching session/pc.
+          for (const id of callIds) {
+            await handleCallEvent(terminateEvent(id), 'tok', fb.deps);
+          }
+          expect(fb.store.size).toBe(0);
+          expect(fb.disconnects.length).toBe(callIds.length);
+          for (const id of callIds) {
+            const d = fb.disconnects.find((x) => x.pcId === `pc-${id}`);
+            expect(d).toBeDefined();
+            expect(d!.sessionId).toBe(callSessionId(id));
+          }
+        },
+      ),
+      RUNS,
+    );
+  });
+});
+
+describe('calls signaling (units)', () => {
+  test('connect with no offer SDP: no mapping, no accept', async () => {
+    const fb = makeFakeDeps();
+    const ev = { ...connectEvent('c1'), sdpType: '', sdp: '' };
+    await handleCallEvent(ev, 'tok', fb.deps);
+    expect(fb.store.size).toBe(0);
+    expect(fb.offers.length).toBe(0);
+    expect(fb.actions.length).toBe(0);
+  });
+
+  test('runtime returns an error: terminate sent to Meta, no mapping', async () => {
+    const fb = makeFakeDeps({
+      invokeCallOffer: async () => ({ error: 'turn_fetch_failed' }) as CallAnswer,
+    });
+    await handleCallEvent(connectEvent('c2'), 'tok', fb.deps);
+    expect(fb.store.size).toBe(0);
+    expect(fb.actions).toEqual([{ callId: 'c2', action: 'terminate' }]);
+  });
+
+  test('accept fails: runtime pc is disconnected and mapping deleted', async () => {
+    const fb = makeFakeDeps({
+      sendCallAction: async (_callId, action) => action !== 'accept',
+    });
+    // Re-record actions/disconnects via the overridden + default deps. The
+    // override replaces sendCallAction; disconnect uses the default recorder.
+    await handleCallEvent(connectEvent('c3'), 'tok', fb.deps);
+    expect(fb.store.has('c3')).toBe(false);
+    expect(fb.disconnects).toEqual([{ sessionId: callSessionId('c3'), pcId: 'pc-c3' }]);
+  });
+
+  test('terminate with no mapping: no disconnect', async () => {
+    const fb = makeFakeDeps();
+    await handleCallEvent(terminateEvent('ghost'), 'tok', fb.deps);
+    expect(fb.disconnects.length).toBe(0);
+  });
+
+  test('connect tolerates customer_id derivation failure', async () => {
+    const fb = makeFakeDeps({
+      deriveCustomerId: async () => {
+        throw new Error('pepper unavailable');
+      },
+    });
+    await handleCallEvent(connectEvent('c4'), 'tok', fb.deps);
+    // Still maps + accepts; customerId recorded as empty.
+    expect(fb.store.get('c4')?.customerId).toBe('');
+    expect(fb.actions.filter((x) => x.callId === 'c4').map((x) => x.action)).toEqual(['accept']);
   });
 });

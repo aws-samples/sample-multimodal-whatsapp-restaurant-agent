@@ -349,3 +349,87 @@ export async function sendAudio(
   emitDeliveryFailure(channel, customerId, `status_${outcome.last.status}`);
   return false;
 }
+
+
+// ---------------------------------------------------------------------------
+// Calls signaling (Task 17, R8): answer/terminate a WhatsApp call via the Meta
+// Calling API. The SDP answer produced by the Call Runtime is returned to Meta
+// here via POST /<PHONE_NUMBER_ID>/calls - NOT in the webhook HTTP response -
+// which is what lets the calls path be fully async. The Access_Token is the
+// same credential used for messages. Same retry/backoff posture as messages.
+// ---------------------------------------------------------------------------
+
+export type CallAction = 'pre_accept' | 'accept' | 'reject' | 'terminate';
+
+/** Build the Meta /calls request body. pre_accept/accept carry the SDP answer
+ *  in `session`; reject/terminate carry none. */
+export function callActionPayload(callId: string, action: CallAction, answerSdp?: string) {
+  const body: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    call_id: callId,
+    action,
+  };
+  if (answerSdp && (action === 'pre_accept' || action === 'accept')) {
+    body.session = { sdp_type: 'answer', sdp: answerSdp };
+  }
+  return body;
+}
+
+// One HTTP POST to the Calls API with a 10 s per-attempt timeout. Mirrors
+// postMessage (returns an AttemptResult, never throws).
+async function postCall(phoneNumberId: string, token: string, payload: unknown): Promise<AttemptResult> {
+  const url = `${GRAPH_BASE}/${phoneNumberId}/calls`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (resp.ok) return { status: resp.status };
+    let errorCode: number | undefined;
+    let errorMessage: string | undefined;
+    try {
+      const body = (await resp.json()) as { error?: { code?: number; message?: string } };
+      errorCode = body?.error?.code;
+      errorMessage = body?.error?.message;
+    } catch {
+      /* no JSON body */
+    }
+    return { status: resp.status, errorCode, errorMessage };
+  } catch (err) {
+    const timedOut = (err as { name?: string })?.name === 'AbortError';
+    return { status: 0, timedOut };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Send a Meta calls action (pre_accept / accept / reject / terminate) with the
+ *  standard retry/backoff. Returns true on a 2xx. Never throws; logs by call_id
+ *  (never the caller's phone number). */
+export async function sendCallAction(
+  callId: string,
+  action: CallAction,
+  token: string,
+  answerSdp?: string,
+): Promise<boolean> {
+  const phoneNumberId = process.env.PHONE_NUMBER_ID;
+  if (!phoneNumberId || !token) {
+    console.error(`cannot send calls action ${action}: missing PHONE_NUMBER_ID or token (call ${callId})`);
+    return false;
+  }
+  const outcome = await sendWithRetry(() =>
+    postCall(phoneNumberId, token, callActionPayload(callId, action, answerSdp)),
+  );
+  if (!outcome.ok) {
+    console.warn(
+      `calls action ${action} failed for call ${callId} after ${outcome.attempts} attempt(s): ` +
+        `status=${outcome.last.status} code=${outcome.last.errorCode ?? '-'} ` +
+        `detail=${outcome.last.errorMessage ?? '-'}`,
+    );
+  }
+  return outcome.ok;
+}

@@ -118,3 +118,81 @@ export async function invokeVoiceNote(payload: VoiceNotePayload): Promise<VoiceN
     return null;
   }
 }
+
+
+// --- Call Runtime invoke (Task 17) -----------------------------------------
+//
+// The Call Runtime is the WebRTC answerer. The worker relays a Meta `connect`
+// offer with `action: "offer"` (the runtime holds the pc open and returns a
+// single-shot answer), and on `terminate` sends `action: "disconnect"` for the
+// mapped pc_id. Both must land on the SAME microVM, so the runtimeSessionId is
+// derived deterministically from the Meta CALL-ID (stable across connect +
+// terminate, and present on both events) - NOT from the caller's customer_id,
+// which may fail to derive and is not needed for affinity here.
+
+export interface CallAnswer {
+  call_id?: string;
+  pc_id?: string;
+  type?: string;
+  sdp?: string; // the single-shot answer SDP (with embedded relay candidate)
+  error?: string;
+  detail?: string;
+}
+
+/** Deterministic AgentCore runtimeSessionId for a Meta call-id (>= 33 chars):
+ *  "wa-call-" (8) + 32 hex = 40, alphanumeric + hyphen, stable per call. */
+export function callSessionId(callId: string): string {
+  const digest = createHash('sha256').update(callId, 'utf8').digest('hex').slice(0, 32);
+  return `wa-call-${digest}`;
+}
+
+async function invokeCallRuntime(sessionId: string, payload: unknown): Promise<any | null> {
+  const arn = process.env.CALL_RUNTIME_ARN;
+  if (!arn) {
+    console.error('CALL_RUNTIME_ARN not set; cannot invoke Call Runtime');
+    return null;
+  }
+  try {
+    const { BedrockAgentCoreClient, InvokeAgentRuntimeCommand } = await import(
+      '@aws-sdk/client-bedrock-agentcore'
+    );
+    const client = new BedrockAgentCoreClient({ region: process.env.AWS_REGION ?? 'us-east-1' });
+    const resp = await client.send(
+      new InvokeAgentRuntimeCommand({
+        agentRuntimeArn: arn,
+        runtimeSessionId: sessionId,
+        contentType: 'application/json',
+        accept: 'application/json',
+        payload: new TextEncoder().encode(JSON.stringify(payload)),
+      }),
+    );
+    const body = resp.response;
+    if (!body) return null;
+    const text = await (body as { transformToString(): Promise<string> }).transformToString();
+    return text ? JSON.parse(text) : null;
+  } catch (err) {
+    console.warn(`Call Runtime invoke failed: ${String(err)}`);
+    return null;
+  }
+}
+
+/** Relay a Meta SDP offer to the Call Runtime; return the single-shot answer
+ *  ({pc_id, sdp, type:"answer"}) or null on failure. turnOnly is always true
+ *  (the runtime has no public IP, so only the relay candidate is viable). */
+export async function invokeCallOffer(
+  sessionId: string,
+  callId: string,
+  offerSdp: string,
+): Promise<CallAnswer | null> {
+  return (await invokeCallRuntime(sessionId, {
+    action: 'offer',
+    call_id: callId,
+    data: { sdp: offerSdp, type: 'offer', turnOnly: true },
+  })) as CallAnswer | null;
+}
+
+/** Tell the Call Runtime to close the held peer connection for a call (the
+ *  terminate / hangup path). Best-effort: failures are logged, never thrown. */
+export async function invokeCallDisconnect(sessionId: string, pcId: string): Promise<void> {
+  await invokeCallRuntime(sessionId, { action: 'disconnect', data: { pc_id: pcId } });
+}

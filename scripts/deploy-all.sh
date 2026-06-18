@@ -926,6 +926,7 @@ elif should_deploy wa-webhook; then
     npx cdk deploy WebhookStack \
       --require-approval never \
       $CDK_ROLLBACK_FLAG \
+      --context "enableCallMappingTable=true" \
       --parameters "WebhookStack:DeploymentPrefix=${PROJECT_PREFIX}" \
       --parameters "WebhookStack:AgentCoreGatewayUrl=${GATEWAY_URL}" \
       --parameters "WebhookStack:PepperParameterName=${PEPPER_PARAM_NAME}" \
