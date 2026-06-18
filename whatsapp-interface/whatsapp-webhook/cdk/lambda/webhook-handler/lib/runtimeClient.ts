@@ -178,16 +178,27 @@ async function invokeCallRuntime(sessionId: string, payload: unknown): Promise<a
 
 /** Relay a Meta SDP offer to the Call Runtime; return the single-shot answer
  *  ({pc_id, sdp, type:"answer"}) or null on failure. turnOnly is always true
- *  (the runtime has no public IP, so only the relay candidate is viable). */
+ *  (the runtime has no public IP, so only the relay candidate is viable).
+ *
+ *  ``customerId`` is the caller's pseudonymous ``wa-`` id (NEVER the raw phone -
+ *  that is PII). When present it is threaded into the offer so the runtime
+ *  builds an identified Sonic session with shared-memory recall; when absent the
+ *  runtime stays anonymous. It does NOT affect session affinity (that is keyed
+ *  off the call-id via callSessionId). */
 export async function invokeCallOffer(
   sessionId: string,
   callId: string,
   offerSdp: string,
+  customerId?: string,
 ): Promise<CallAnswer | null> {
+  const data: Record<string, unknown> = { sdp: offerSdp, type: 'offer', turnOnly: true };
+  if (customerId) {
+    data.customer_id = customerId;
+  }
   return (await invokeCallRuntime(sessionId, {
     action: 'offer',
     call_id: callId,
-    data: { sdp: offerSdp, type: 'offer', turnOnly: true },
+    data,
   })) as CallAnswer | null;
 }
 

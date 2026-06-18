@@ -35,7 +35,7 @@ import { sendCallAction, type CallAction } from './whatsappClient.js';
 import { putMapping, getMapping, deleteMapping, type CallMapping } from './callMap.js';
 
 export interface CallDeps {
-  invokeCallOffer: (sessionId: string, callId: string, offerSdp: string) => Promise<CallAnswer | null>;
+  invokeCallOffer: (sessionId: string, callId: string, offerSdp: string, customerId?: string) => Promise<CallAnswer | null>;
   invokeCallDisconnect: (sessionId: string, pcId: string) => Promise<void>;
   sendCallAction: (callId: string, action: CallAction, token: string, answerSdp?: string) => Promise<boolean>;
   putMapping: (callId: string, m: CallMapping) => Promise<boolean>;
@@ -82,8 +82,9 @@ async function handleConnect(ev: CallEvent, token: string, deps: CallDeps): Prom
     return;
   }
 
-  // customer_id is best-effort here (used for memory continuity later); session
-  // affinity does NOT depend on it - it is derived from the call-id.
+  // customer_id is best-effort here: it is threaded into the offer so the
+  // runtime can build an identified Sonic session with shared-memory recall.
+  // Session affinity does NOT depend on it - that is derived from the call-id.
   let customerId = '';
   try {
     customerId = await deps.deriveCustomerId(ev.from);
@@ -92,7 +93,7 @@ async function handleConnect(ev: CallEvent, token: string, deps: CallDeps): Prom
   }
 
   const sessionId = callSessionId(ev.id);
-  const answer = await deps.invokeCallOffer(sessionId, ev.id, ev.sdp);
+  const answer = await deps.invokeCallOffer(sessionId, ev.id, ev.sdp, customerId || undefined);
 
   if (!answer || answer.error || !answer.sdp || !answer.pc_id) {
     console.error(

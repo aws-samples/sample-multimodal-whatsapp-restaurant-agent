@@ -523,7 +523,7 @@ function terminateEvent(id: string): CallEvent {
 interface FakeBundle {
   deps: CallDeps;
   store: Map<string, CallMapping>;
-  offers: Array<{ sessionId: string; callId: string }>;
+  offers: Array<{ sessionId: string; callId: string; customerId?: string }>;
   disconnects: Array<{ sessionId: string; pcId: string }>;
   actions: Array<{ callId: string; action: string }>;
 }
@@ -534,8 +534,8 @@ function makeFakeDeps(overrides: Partial<CallDeps> = {}): FakeBundle {
   const disconnects: FakeBundle['disconnects'] = [];
   const actions: FakeBundle['actions'] = [];
   const deps: CallDeps = {
-    invokeCallOffer: async (sessionId, callId, _sdp): Promise<CallAnswer | null> => {
-      offers.push({ sessionId, callId });
+    invokeCallOffer: async (sessionId, callId, _sdp, customerId): Promise<CallAnswer | null> => {
+      offers.push({ sessionId, callId, customerId });
       return { call_id: callId, pc_id: `pc-${callId}`, type: 'answer', sdp: 'v=0\r\nANSWER\r\n' };
     },
     invokeCallDisconnect: async (sessionId, pcId): Promise<void> => {
@@ -601,6 +601,10 @@ describe('Property 10: calls signaling mapping integrity', () => {
           expect(fb.store.size).toBe(callIds.length);
           // Exactly one offer per call; session id == callSessionId(callId).
           expect(fb.offers.length).toBe(callIds.length);
+          // Each offer threads the derived wa- customer_id (for memory recall).
+          for (const o of fb.offers) {
+            expect(o.customerId).toBe('wa-0123456789abcdef');
+          }
           for (const id of callIds) {
             const m = fb.store.get(id)!;
             expect(m).toBeDefined();
@@ -680,5 +684,7 @@ describe('calls signaling (units)', () => {
     // Still maps + accepts; customerId recorded as empty.
     expect(fb.store.get('c4')?.customerId).toBe('');
     expect(fb.actions.filter((x) => x.callId === 'c4').map((x) => x.action)).toEqual(['accept']);
+    // Derivation failed -> offer threads no customer_id (undefined, not '').
+    expect(fb.offers.find((o) => o.callId === 'c4')?.customerId).toBeUndefined();
   });
 });
