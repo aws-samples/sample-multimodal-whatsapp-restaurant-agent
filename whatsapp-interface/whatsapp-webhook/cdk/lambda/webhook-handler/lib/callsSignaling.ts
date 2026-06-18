@@ -111,6 +111,19 @@ async function handleConnect(ev: CallEvent, token: string, deps: CallDeps): Prom
   // Go straight to accept with the SDP answer. (pre_accept is skipped: it is an
   // optional early-media optimization, and sending it risks a divergent-SDP
   // rejection; a single accept is the confirmed-working path.)
+  //
+  // FUTURE OPTIMIZATION (open-source contributors welcome): Meta's `pre_accept`
+  // action lets the device begin ICE/DTLS/SRTP media setup ~one signaling
+  // round-trip EARLIER than `accept`, which can shave first-word latency and
+  // reduce greeting clipping. Today's experience is already good (~1s from
+  // answer to the agent speaking - that gap is dominated by the DTLS handshake
+  // through the TURN relay plus Nova Sonic's first token, not by this signaling
+  // step), so we ship the simpler single-`accept` path. To try the
+  // optimization: send `pre_accept` with the EXACT SAME munged answer SDP first,
+  // then `accept` with the same SDP (sending an identical SDP in both is what
+  // avoids the divergent-SDP rejection that motivated skipping it). Measure
+  // first-word latency before/after on a real call and revert if it does not
+  // help. See spec task 19 (R10) - intentionally descoped for this sample.
   const accepted = await deps.sendCallAction(ev.id, 'accept', token, answer.sdp);
   if (!accepted) {
     console.error(`calls: accept failed for call ${ev.id}; disconnecting the runtime pc`);
