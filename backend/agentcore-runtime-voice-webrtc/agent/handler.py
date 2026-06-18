@@ -57,13 +57,19 @@ native media deps, and the unit tests mock the answerer + TURN fetch entirely.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
-from typing import Any, Dict
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import kvs_turn
 import single_shot_answerer
+import sonic_call
+import transcode
+import pstn_customer
+from session import Session
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -77,11 +83,43 @@ logger = logging.getLogger(__name__)
 # kvs_turn). Name is env-driven so the CDK pins it per deployment.
 DEFAULT_CHANNEL = "wa-voice-call"
 
-# Live peer connections held open for in-flight calls, keyed by pc_id. Populated
-# by the `offer` action and drained by `disconnect`. In-process per microVM;
-# session affinity (same runtime_session_id for offer + disconnect) keeps a
-# call's offer and hangup on the same microVM. See module docstring.
-_PCS: Dict[str, Any] = {}
+# Live calls held open, keyed by pc_id. Each entry is a _CallBundle carrying the
+# peer connection, the Nova Sonic agent + its MCP client, the outbound track, and
+# the background pump tasks - everything run_disconnect must tear down. In-process
+# per microVM; session affinity (same runtime_session_id for offer + disconnect)
+# keeps a call's offer and hangup on the same microVM. See module docstring.
+_PCS: Dict[str, "_CallBundle"] = {}
+
+
+@dataclass
+class _CallBundle:
+    """Everything tied to one live call's held peer connection."""
+
+    pc: Any
+    agent: Any = None
+    mcp_client: Any = None
+    output_track: Any = None
+    tasks: List[Any] = field(default_factory=list)
+
+    async def teardown(self) -> None:
+        """Best-effort teardown: cancel pumps, stop the agent, close MCP + pc."""
+        for task in self.tasks:
+            task.cancel()
+        if self.agent is not None:
+            try:
+                await self.agent.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("agent stop raised (ignored)")
+        if self.mcp_client is not None:
+            try:
+                self.mcp_client.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                logger.debug("mcp client exit raised (ignored)")
+        if self.pc is not None:
+            try:
+                await self.pc.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("pc close raised (ignored)")
 
 
 def _channel_name() -> str:
@@ -108,26 +146,18 @@ def _decode_offer(payload: dict) -> str:
     raise ValueError("missing offer_sdp / offer_sdp_b64")
 
 
-async def _drain_track(track: Any) -> None:
-    """Continuously read and discard inbound media frames.
-
-    Until Nova 2 Sonic is wired in (Tasks 18/19) the agent does not consume
-    audio, but an unread receiver can stall the transport. Draining keeps the
-    media path healthy so the call stays connected. Exits when the track ends
-    (the pc closed), swallowing the resulting exception."""
-    try:
-        while True:
-            await track.recv()
-    except Exception:  # noqa: BLE001 - track ended / pc closed
-        return
-
-
 async def run_offer(payload: dict) -> dict:
-    """Answer a Meta offer and HOLD the peer connection open (Task 17).
+    """Answer a Meta offer, wire Nova 2 Sonic to the media, and HOLD the pc open.
 
-    Reads the design contract ``data: {sdp, type, turnOnly}``. Registers the
-    live pc by pc_id in ``_PCS`` so a later ``disconnect`` can close it. Never
-    raises: failures degrade to an ``{"error": ...}`` dict."""
+    Reads the design contract ``data: {sdp, type, turnOnly}``. Builds a Nova
+    Sonic BidiAgent, attaches the inbound pump + outbound SonicOutputTrack so the
+    answer negotiates sendrecv, spawns the receive + keepalive pumps, and
+    registers the whole bundle by pc_id in ``_PCS`` so ``disconnect`` can tear it
+    down. Never raises: failures degrade to an ``{"error": ...}`` dict.
+
+    Identity note: the caller's phone is not threaded into the runtime yet, so the
+    Sonic session is built anonymously (no loyalty/memory). Wiring caller identity
+    + shared AgentCore Memory is the immediate follow-up (tasks.md 16.4)."""
     call_id = (payload.get("call_id") or "").strip()
     data = payload.get("data") or {}
     offer_sdp = data.get("sdp")
@@ -144,19 +174,56 @@ async def run_offer(payload: dict) -> dict:
     if not ice_servers:
         return {"error": "no_turn_servers", "call_id": call_id}
 
+    # Anonymous session for now (caller identity + memory are the follow-up).
+    try:
+        customer_id, anonymous, from_last4 = pstn_customer.derive_for_session("")
+    except Exception:  # noqa: BLE001
+        customer_id, anonymous, from_last4 = pstn_customer.derive("", b"")
+    session = Session(
+        call_id=call_id,
+        raw_from="",
+        from_last4=from_last4,
+        anonymous=anonymous,
+        customer_id=customer_id,
+    )
+
+    # Build + start the Nova Sonic agent (model + MCP tools + prompt + prime).
+    try:
+        mcp_client, agent = await sonic_call.build_agent(session)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("call %s: agent build failed", call_id or "?")
+        return {"error": "agent_failed", "call_id": call_id, "detail": str(exc)}
+
+    output_track = transcode.SonicOutputTrack()
+    on_track = sonic_call.make_inbound_pump(agent)
+    bundle = _CallBundle(pc=None, agent=agent, mcp_client=mcp_client, output_track=output_track)
+
     try:
         result = await single_shot_answerer.create_single_shot_answer(
-            offer_sdp, offer_type, ice_servers, turn_only=turn_only, on_track=_drain_track
+            offer_sdp,
+            offer_type,
+            ice_servers,
+            turn_only=turn_only,
+            on_track=on_track,
+            output_track=output_track,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("call %s: answer creation failed", call_id or "?")
+        await bundle.teardown()
         return {"error": "answer_failed", "call_id": call_id, "detail": str(exc)}
 
+    bundle.pc = result["pc"]
     pc_id = result["pc_id"]
-    # HOLD the pc open: register it instead of closing. disconnect() closes it.
-    _PCS[pc_id] = result["pc"]
+    # Spawn the outbound (Sonic -> track) pump and the idle keepalive.
+    bundle.tasks = [
+        asyncio.create_task(
+            sonic_call.receive_pump(agent, output_track, session), name=f"recv-{pc_id}"
+        ),
+        asyncio.create_task(sonic_call.keepalive_loop(agent), name=f"keepalive-{pc_id}"),
+    ]
+    _PCS[pc_id] = bundle
     logger.info(
-        "call %s: answer ready, pc held open pc_id=%s (live pcs=%d)",
+        "call %s: answer ready, Sonic wired, pc held open pc_id=%s (live pcs=%d)",
         call_id or "?",
         pc_id,
         len(_PCS),
@@ -170,23 +237,20 @@ async def run_offer(payload: dict) -> dict:
 
 
 async def run_disconnect(payload: dict) -> dict:
-    """Close the held peer connection for a call (Task 17 terminate path)."""
+    """Tear down the held call for a pc_id (Task 17 terminate path)."""
     data = payload.get("data") or {}
     pc_id = (data.get("pc_id") or "").strip()
     if not pc_id:
         return {"error": "bad_disconnect", "detail": "missing data.pc_id"}
 
-    pc = _PCS.pop(pc_id, None)
-    if pc is None:
+    bundle = _PCS.pop(pc_id, None)
+    if bundle is None:
         # Idempotent: a duplicate terminate or a pc on another microVM.
         logger.info("disconnect: pc_id=%s not found (already closed?)", pc_id)
         return {"pc_id": pc_id, "status": "not_found"}
 
-    try:
-        await pc.close()
-    except Exception:  # noqa: BLE001 - best-effort teardown
-        logger.debug("disconnect: pc %s close raised (ignored)", pc_id)
-    logger.info("disconnect: pc %s closed (live pcs=%d)", pc_id, len(_PCS))
+    await bundle.teardown()
+    logger.info("disconnect: pc %s torn down (live pcs=%d)", pc_id, len(_PCS))
     return {"pc_id": pc_id, "status": "disconnected"}
 
 

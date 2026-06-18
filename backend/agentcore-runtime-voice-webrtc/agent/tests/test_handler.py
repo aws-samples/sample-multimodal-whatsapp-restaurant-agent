@@ -211,7 +211,7 @@ def test_property_call_id_roundtrips_and_pc_closed(call_id, use_b64):
         handler.single_shot_answerer.create_single_shot_answer = orig_answer  # type: ignore[assignment]
 
 
-# --- Task 17: offer (hold-open) + disconnect contract ----------------------
+# --- Task 17 / 16.4: offer (agent + hold-open) + disconnect teardown --------
 
 OFFER_PAYLOAD = {
     "action": "offer",
@@ -220,19 +220,62 @@ OFFER_PAYLOAD = {
 }
 
 
+class _FakeAgent:
+    def __init__(self) -> None:
+        self.stopped = False
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class _FakeMcp:
+    def __init__(self) -> None:
+        self.exited = False
+
+    def __exit__(self, *a) -> None:
+        self.exited = True
+
+
+def _install_sonic(monkeypatch, *, build_raises=False):
+    """Mock the Nova Sonic collaborators so run_offer is unit-testable without
+    Strands/aiortc: build_agent, make_inbound_pump, receive_pump, keepalive_loop,
+    the output track, and the (SSM-backed) customer derivation."""
+    agent = _FakeAgent()
+    mcp = _FakeMcp()
+
+    async def _build(session, voice_id="tiffany"):
+        if build_raises:
+            raise RuntimeError("boom")
+        return mcp, agent
+
+    async def _noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(handler.sonic_call, "build_agent", _build)
+    monkeypatch.setattr(handler.sonic_call, "make_inbound_pump", lambda a: (lambda track: None))
+    monkeypatch.setattr(handler.sonic_call, "receive_pump", _noop)
+    monkeypatch.setattr(handler.sonic_call, "keepalive_loop", _noop)
+    monkeypatch.setattr(handler.transcode, "SonicOutputTrack", lambda *a, **k: object())
+    monkeypatch.setattr(
+        handler.pstn_customer, "derive_for_session", lambda raw: ("wa-test0000000000", True, "")
+    )
+    return agent, mcp
+
+
 @pytest.fixture(autouse=True)
 def _clear_pcs():
-    """Each test starts with an empty live-pc registry (no cross-test leak)."""
+    """Each test starts with an empty live-call registry (no cross-test leak)."""
     handler._PCS.clear()
     yield
     handler._PCS.clear()
 
 
 @pytest.mark.asyncio
-async def test_offer_holds_pc_open_and_registers(monkeypatch):
+async def test_offer_builds_agent_holds_pc_and_registers(monkeypatch):
     _install_turn(monkeypatch, SAMPLE_ICE)
     capture: dict = {}
     pc = _install_answerer(monkeypatch, sdp="v=0\r\nHELD\r\n", capture=capture)
+    agent, mcp = _install_sonic(monkeypatch)
 
     out = await handler.run_offer(OFFER_PAYLOAD)
 
@@ -241,13 +284,19 @@ async def test_offer_holds_pc_open_and_registers(monkeypatch):
     assert out["call_id"] == "call-17"
     assert out["type"] == "answer"
     pc_id = out["pc_id"]
-    # The offer reads data.sdp and threads turn_only + the drain on_track hook.
+    # The offer threads turn_only + the inbound pump + the outbound send track
+    # into the answerer (the send track is what makes the answer sendrecv).
     assert capture["offer_sdp"] == OFFER_SDP
     assert capture["kwargs"].get("turn_only") is True
-    assert capture["kwargs"].get("on_track") is handler._drain_track
-    # The pc is HELD open (not closed) and registered by pc_id.
+    assert capture["kwargs"].get("on_track") is not None
+    assert capture["kwargs"].get("output_track") is not None
+    # pc HELD open; the bundle carries the agent + mcp client for teardown.
     assert pc.closed is False
-    assert handler._PCS.get(pc_id) is pc
+    bundle = handler._PCS.get(pc_id)
+    assert bundle is not None
+    assert bundle.pc is pc
+    assert bundle.agent is agent
+    assert bundle.mcp_client is mcp
 
 
 @pytest.mark.asyncio
@@ -260,9 +309,20 @@ async def test_offer_missing_sdp_returns_bad_offer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_disconnect_closes_and_deregisters(monkeypatch):
+async def test_offer_agent_build_failure_returns_error(monkeypatch):
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch)
+    _install_sonic(monkeypatch, build_raises=True)
+    out = await handler.run_offer(OFFER_PAYLOAD)
+    assert out["error"] == "agent_failed"
+    assert handler._PCS == {}
+
+
+@pytest.mark.asyncio
+async def test_disconnect_tears_down_and_deregisters(monkeypatch):
     _install_turn(monkeypatch, SAMPLE_ICE)
     pc = _install_answerer(monkeypatch, capture={})
+    agent, mcp = _install_sonic(monkeypatch)
     offered = await handler.run_offer(OFFER_PAYLOAD)
     pc_id = offered["pc_id"]
     assert pc_id in handler._PCS
@@ -271,6 +331,8 @@ async def test_disconnect_closes_and_deregisters(monkeypatch):
 
     assert out == {"pc_id": pc_id, "status": "disconnected"}
     assert pc.closed is True
+    assert agent.stopped is True
+    assert mcp.exited is True
     assert pc_id not in handler._PCS
 
 
@@ -290,6 +352,7 @@ async def test_disconnect_missing_pc_id_returns_error():
 async def test_dispatch_routes_offer_and_disconnect(monkeypatch):
     _install_turn(monkeypatch, SAMPLE_ICE)
     _install_answerer(monkeypatch, capture={})
+    _install_sonic(monkeypatch)
     offered = await handler.handle_invocation(OFFER_PAYLOAD)
     assert "sdp" in offered and offered["pc_id"] in handler._PCS
 
@@ -304,6 +367,7 @@ async def test_dispatch_defaults_to_offer(monkeypatch):
     """Omitting action defaults to the offer (connect) path."""
     _install_turn(monkeypatch, SAMPLE_ICE)
     _install_answerer(monkeypatch, capture={})
+    _install_sonic(monkeypatch)
     out = await handler.handle_invocation(
         {"call_id": "c", "data": {"sdp": OFFER_SDP, "type": "offer"}}
     )

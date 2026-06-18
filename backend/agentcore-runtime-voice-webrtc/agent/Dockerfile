@@ -44,6 +44,7 @@ RUN pip install -r requirements.txt
 # (session/telephony_agent/protocol + memory/mcp/prompt) lands in Tasks 18/19 and
 # is carried now so the image is complete for that step.
 COPY handler.py kvs_turn.py single_shot_answerer.py sdp_inspect.py ./
+COPY transcode.py sonic_call.py ./
 COPY telephony_agent.py protocol.py session.py pstn_customer.py mcp_tools.py system_prompt.py prompt_renderer.py memory_client.py ./
 
 # Smoke test - fail the build early if the invoke entrypoint's imports are broken.

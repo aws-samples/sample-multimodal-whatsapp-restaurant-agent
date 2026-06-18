@@ -158,22 +158,30 @@ async def create_single_shot_answer(
     turn_only: bool = True,
     gather_timeout_s: float = DEFAULT_GATHER_TIMEOUT_S,
     on_track: Any = None,
+    output_track: Any = None,
 ) -> dict:
     """Produce a single-shot SDP answer for a Meta offer.
 
     Sets the remote offer, creates an answer, waits for ICE gathering to
     complete (so candidates are embedded), optionally strips to relay-only
-    (turn_only), and returns ``{"pc_id", "sdp", "type": "answer", "pc"}``. The
-    caller owns ``pc`` and must close it when the call ends. ``on_track`` (if
-    given) is registered so inbound audio can be wired to the transcode/Sonic
-    path - the spike uses it only to confirm media tracks negotiate."""
+    (turn_only), reshapes for Meta, and returns ``{"pc_id", "sdp",
+    "type": "answer", "pc"}``. The caller owns ``pc`` and must close it.
+
+    ``on_track`` (the inbound media pump) and ``output_track`` (the Nova Sonic
+    send track) are wired BEFORE createAnswer: adding a send track makes aiortc
+    negotiate ``sendrecv`` naturally (the reference's "CRITICAL official
+    pattern"), so the Meta answer carries the agent's outbound media leg."""
     from aiortc import RTCPeerConnection, RTCSessionDescription
 
     pc = RTCPeerConnection(configuration=_build_configuration(ice_servers))
     pc_id = f"pc-{id(pc):x}"
 
+    # Register inbound pump + add the outbound track BEFORE setRemoteDescription
+    # / createAnswer so the answer negotiates sendrecv.
     if on_track is not None:
         pc.on("track")(on_track)
+    if output_track is not None:
+        pc.addTrack(output_track)
 
     await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type=offer_type))
     answer = await pc.createAnswer()
@@ -184,12 +192,15 @@ async def create_single_shot_answer(
     if turn_only:
         sdp = _strip_to_relay(sdp)
     # Always reshape the answer to Meta's SDP validation rules (single sha-256
-    # fingerprint, routable relay c=/m=, sendrecv). See _munge_for_meta.
+    # fingerprint, routable relay c=/m=, sendrecv). See _munge_for_meta. With an
+    # output_track present aiortc already emits sendrecv; the direction rewrite
+    # is then a harmless no-op, but the fingerprint + relay c=/m= fixes still apply.
     sdp = _munge_for_meta(sdp)
 
     logger.info(
-        "single-shot answer ready pc_id=%s gathering=%s",
+        "single-shot answer ready pc_id=%s gathering=%s sendtrack=%s",
         pc_id,
         pc.iceGatheringState,
+        output_track is not None,
     )
     return {"pc_id": pc_id, "sdp": sdp, "type": "answer", "pc": pc}
