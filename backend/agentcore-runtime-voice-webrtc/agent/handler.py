@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import kvs_turn
+import sdp_inspect
 import single_shot_answerer
 import sonic_call
 import transcode
@@ -174,6 +175,28 @@ async def run_offer(payload: dict) -> dict:
         return {"error": "bad_offer", "call_id": call_id, "detail": "missing data.sdp"}
     offer_type = (data.get("type") or "offer").strip()
     turn_only = data.get("turnOnly", True)
+
+    # Codec gate (R8.4/R8.7): select Opus (preferred) or the G.711 fallback from
+    # the offer. If the offer advertises neither, reject BEFORE building the Nova
+    # Sonic agent so no session is established and the live-call count is
+    # unchanged. The rejection is logged to CloudWatch Logs with the offered
+    # codec set so unsupported-codec calls are diagnosable.
+    codec = sdp_inspect.select_offered_codec(offer_sdp)
+    if codec is None:
+        offered = sdp_inspect.audio_codecs(offer_sdp)
+        logger.warning(
+            "call %s: unsupported codec offer - rejecting (no Nova Sonic session); "
+            "offered=%s accepted=%s",
+            call_id or "?",
+            offered or ["<none>"],
+            list(sdp_inspect.ACCEPTED_AUDIO_CODECS),
+        )
+        return {
+            "error": "unsupported_codec",
+            "call_id": call_id,
+            "detail": ",".join(offered) or "none",
+        }
+    logger.info("call %s: codec selected=%s", call_id or "?", codec)
 
     try:
         ice_servers = kvs_turn.get_ice_servers(_channel_name())

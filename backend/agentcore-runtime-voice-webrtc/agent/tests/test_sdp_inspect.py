@@ -126,3 +126,43 @@ def test_property_candidate_counts(n_relay, n_host):
     assert sdp_inspect.has_embedded_candidates(sdp) == (n_relay + n_host >= 1)
     assert sdp_inspect.has_relay_candidate(sdp) == (n_relay >= 1)
     assert sdp_inspect.only_relay_candidates(sdp) == (n_relay >= 1 and n_host == 0)
+
+
+# --- Task 18: codec selection (select_offered_codec) ------------------------
+
+def _audio_offer(*encodings: str) -> str:
+    """Build a minimal offer SDP advertising the given rtpmap encodings."""
+    lines = ["v=0", "o=- 1 1 IN IP4 0.0.0.0", "m=audio 9 UDP/TLS/RTP/SAVPF 96"]
+    for i, enc in enumerate(encodings):
+        lines.append(f"a=rtpmap:{96 + i} {enc}")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def test_select_codec_prefers_opus_when_advertised():
+    assert sdp_inspect.select_offered_codec(_audio_offer("opus/48000/2")) == "opus"
+    # Opus is preferred even when G.711 is also offered.
+    assert (
+        sdp_inspect.select_offered_codec(_audio_offer("opus/48000/2", "PCMU/8000"))
+        == "opus"
+    )
+
+
+def test_select_codec_falls_back_to_g711():
+    assert sdp_inspect.select_offered_codec(_audio_offer("PCMU/8000")) == "g711"
+    assert sdp_inspect.select_offered_codec(_audio_offer("PCMA/8000")) == "g711"
+    assert (
+        sdp_inspect.select_offered_codec(_audio_offer("PCMU/8000", "PCMA/8000")) == "g711"
+    )
+
+
+def test_select_codec_none_when_unsupported():
+    # Neither Opus nor G.711 -> None (caller must reject, R8.7).
+    assert sdp_inspect.select_offered_codec(_audio_offer("G729/8000")) is None
+    assert (
+        sdp_inspect.select_offered_codec(
+            _audio_offer("G729/8000", "telephone-event/8000")
+        )
+        is None
+    )
+    # An audio m-line with no rtpmap advertises no codec -> None.
+    assert sdp_inspect.select_offered_codec("v=0\r\nm=audio 9 RTP 96\r\n") is None

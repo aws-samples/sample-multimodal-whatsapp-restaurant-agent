@@ -131,6 +131,27 @@ def codec_ok(answer_sdp: str) -> bool:
     return any(c in ACCEPTED_AUDIO_CODECS for c in audio_codecs(answer_sdp))
 
 
+# Logical codec selection results returned by select_offered_codec (R8.4).
+CODEC_OPUS = "opus"
+CODEC_G711 = "g711"
+
+
+def select_offered_codec(offer_sdp: str) -> Optional[str]:
+    """Choose the codec to use from an OFFER's advertised audio codecs (R8.4).
+
+    Preference order: Opus first; G.711 (PCMU/PCMA) only as a fallback when Opus
+    is not advertised. Returns ``"opus"``, ``"g711"``, or ``None`` when the offer
+    advertises neither accepted codec (the caller must then reject the offer and
+    establish no Nova Sonic session, R8.7). Pure and deterministic - the same
+    offer always yields the same selection."""
+    codecs = audio_codecs(offer_sdp)
+    if CODEC_OPUS in codecs:
+        return CODEC_OPUS
+    if "pcmu" in codecs or "pcma" in codecs:
+        return CODEC_G711
+    return None
+
+
 @dataclass
 class DeliverableReport:
     """The locally-inspectable spike deliverables (a), (c), (d). Deliverable

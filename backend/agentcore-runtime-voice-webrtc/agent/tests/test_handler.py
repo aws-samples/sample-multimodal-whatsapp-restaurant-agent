@@ -52,7 +52,10 @@ def _install_turn(monkeypatch, ice_servers):
 
 
 SAMPLE_ICE = [{"urls": ["turn:1.2.3.4:443"], "username": "u", "credential": "c"}]
-OFFER_SDP = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+OFFER_SDP = (
+    "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
+    "a=rtpmap:111 opus/48000/2\r\n"
+)
 
 
 @pytest.mark.asyncio
@@ -330,6 +333,36 @@ async def test_offer_missing_sdp_returns_bad_offer(monkeypatch):
     _install_answerer(monkeypatch)
     out = await handler.run_offer({"action": "offer", "call_id": "c", "data": {}})
     assert out["error"] == "bad_offer"
+    assert handler._PCS == {}
+
+
+@pytest.mark.asyncio
+async def test_offer_unsupported_codec_rejected_no_session(monkeypatch):
+    """An offer advertising neither Opus nor G.711 is rejected BEFORE any Nova
+    Sonic session is built (R8.7): error returned, agent never built, live-call
+    registry unchanged."""
+    built = {"called": False}
+
+    async def _build_should_not_run(session, voice_id="tiffany"):
+        built["called"] = True
+        raise AssertionError("build_agent must not run on an unsupported codec")
+
+    monkeypatch.setattr(handler.sonic_call, "build_agent", _build_should_not_run)
+    # TURN + answerer are installed but must never be reached.
+    _install_turn(monkeypatch, SAMPLE_ICE)
+    _install_answerer(monkeypatch)
+
+    unsupported_offer = (
+        "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96\r\n"
+        "a=rtpmap:96 G729/8000\r\n"
+    )
+    out = await handler.run_offer(
+        {"action": "offer", "call_id": "call-bad-codec", "data": {"sdp": unsupported_offer}}
+    )
+    assert out["error"] == "unsupported_codec"
+    assert out["call_id"] == "call-bad-codec"
+    assert "g729" in out["detail"]
+    assert built["called"] is False
     assert handler._PCS == {}
 
 
