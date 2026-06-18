@@ -29,14 +29,32 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 import mcp_tools
-from memory_client import SharedMemoryClient, Turn
+from memory_client import ENV_MEMORY_ID, SharedMemoryClient, Turn
 from system_prompt import render_system_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_memory_id() -> str:
+    """Resolve the bare AgentCore Memory id for the shared memory client.
+
+    Prefers ``WA_MEMORY_ID`` (the bare id the canonical client reads). Falls back
+    to parsing it out of ``SHARED_MEMORY_ARN`` (``arn:...:memory/<id>``) because
+    the VoiceNotes stack currently threads only the ARN. Returns "" when neither
+    is set (the memory client then degrades to a no-op). Mirrors the Chat and
+    Call runtimes so the same customer recalls across all three channels."""
+    memory_id = os.environ.get(ENV_MEMORY_ID, "").strip()
+    if memory_id:
+        return memory_id
+    arn = os.environ.get("SHARED_MEMORY_ARN", "").strip()
+    if arn and "/" in arn:
+        return arn.rsplit("/", 1)[-1]
+    return ""
 
 # Audio shape (R7.4): Nova Sonic input is 16 kHz, output is 24 kHz, both 16-bit
 # mono linear PCM. The ogg_codec decode produces 16 kHz; its encode consumes
@@ -178,7 +196,7 @@ async def run_bounded_session(
         return BoundedResult(ok=False, error="empty_input_audio")
 
     region = region or os.environ.get("AWS_REGION", "us-east-1")
-    memory = memory or SharedMemoryClient()
+    memory = memory or SharedMemoryClient(memory_id=_resolve_memory_id())
 
     # --- session start: read shared long-term memory (graceful on failure) ---
     read = memory.read_long_term(customer_id)
