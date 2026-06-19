@@ -43,26 +43,61 @@ def trim_turns(turns: list, max_keep: int = MAX_TURNS) -> list:
     return turns[-max_keep:]
 
 
-def to_text_only(message: dict) -> dict:
+def to_text_only(message: dict) -> dict | None:
     """Reduce a Converse message to a text-only message for bounded storage.
 
-    Non-text content blocks (image/document/toolUse/toolResult) become a short
-    ``[image]`` / ``[document]`` / ``[tool]`` placeholder so retained history
-    does not carry bytes."""
+    - Text blocks are kept.
+    - Image / document blocks become a short ``[image]`` / ``[document]`` marker
+      so retained history does not carry bytes.
+    - ``toolUse`` / ``toolResult`` blocks are DROPPED ENTIRELY (not stored).
+
+    Why drop tool blocks instead of placeholdering them: storing a placeholder
+    (the old behavior emitted ``[tool]``) POISONS the retained context. The model
+    sees prior assistant turns that are just the placeholder and imitates the
+    pattern - it starts emitting the placeholder as a response instead of calling
+    a tool, and the loop self-reinforces as more placeholders accumulate. The
+    assistant's natural-language answer that FOLLOWS a tool round-trip already
+    carries the needed information, so conversational continuity is preserved
+    without the tool noise.
+
+    Returns the reduced message, or ``None`` when nothing storable remains (e.g.
+    a pure toolUse / toolResult turn) so the caller drops it.
+    """
     role = message.get("role", "user")
     out_blocks = []
     for block in message.get("content", []) or []:
+        if not isinstance(block, dict):
+            continue
         if "text" in block:
-            out_blocks.append({"text": block["text"]})
+            value = block.get("text")
+            if isinstance(value, str) and value.strip():
+                out_blocks.append({"text": value})
         elif "image" in block:
             out_blocks.append({"text": "[image]"})
         elif "document" in block:
             out_blocks.append({"text": "[document]"})
-        elif "toolUse" in block or "toolResult" in block:
-            out_blocks.append({"text": "[tool]"})
+        # toolUse / toolResult: dropped (see docstring) - never stored.
     if not out_blocks:
-        out_blocks = [{"text": ""}]
+        return None
     return {"role": role, "content": out_blocks}
+
+
+def merge_consecutive_roles(messages: list) -> list:
+    """Merge consecutive same-role messages into one (pure).
+
+    Dropping tool turns can leave two assistant (or two user) messages adjacent;
+    Converse requires roles to alternate, so merge their content blocks to keep
+    the stored history a valid alternating transcript.
+    """
+    merged: list = []
+    for msg in messages:
+        if merged and merged[-1].get("role") == msg.get("role"):
+            merged[-1]["content"] = list(merged[-1].get("content", [])) + list(
+                msg.get("content", [])
+            )
+        else:
+            merged.append({"role": msg.get("role"), "content": list(msg.get("content", []))})
+    return merged
 
 
 @dataclass
@@ -99,9 +134,20 @@ class InProcessSessionStore:
             return []
 
     def save(self, customer_id: str, messages: list, now: float | None = None) -> None:
-        """Persist the updated (text-reduced, trimmed) history for a customer."""
+        """Persist the updated (text-reduced, trimmed) history for a customer.
+
+        Pipeline: reduce each message to text-only (dropping tool blocks and any
+        message left empty), merge consecutive same-role messages, trim to the
+        most recent turns, then drop any leading non-user message so the stored
+        history begins with a user turn (Converse requires the first message in
+        the array to be a user turn).
+        """
         now = time.time() if now is None else now
-        reduced = trim_turns([to_text_only(m) for m in messages])
+        reduced = [m for m in (to_text_only(msg) for msg in messages) if m is not None]
+        reduced = merge_consecutive_roles(reduced)
+        reduced = trim_turns(reduced)
+        while reduced and reduced[0].get("role") != "user":
+            reduced.pop(0)
         with self._lock:
             self._sessions[customer_id] = _Session(messages=reduced, last_activity_ts=now)
 

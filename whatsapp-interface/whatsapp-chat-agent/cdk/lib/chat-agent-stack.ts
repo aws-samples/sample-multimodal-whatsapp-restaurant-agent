@@ -517,6 +517,30 @@ export class ChatAgentStack extends cdk.Stack {
       }),
     );
 
+    // Sid 9 - Invoke the WhatsApp Sender Lambda (Option C). The runtime sends
+    // every customer-facing message by invoking this Lambda, which holds the
+    // Meta Access_Token and resolves the recipient wa_id from the window table
+    // (the runtime carries neither secret nor PII). Addressed by a DETERMINISTIC
+    // name so there is NO cross-stack import and no dependency cycle: the webhook
+    // stack creates `<prefix>-wa-sender`, and we construct the identical ARN here
+    // from the shared DeploymentPrefix. Exact ARN, no wildcard.
+    const senderLambdaArn = cdk.Fn.sub(
+      'arn:${Partition}:lambda:${R}:${A}:function:${P}-wa-sender',
+      {
+        Partition: cdk.Aws.PARTITION,
+        R: cdk.Aws.REGION,
+        A: cdk.Aws.ACCOUNT_ID,
+        P: prefix,
+      },
+    );
+    runtimeRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'InvokeSenderLambda',
+        actions: ['lambda:InvokeFunction'],
+        resources: [senderLambdaArn],
+      }),
+    );
+
     // ----------------- AgentCore Runtime (AWS::BedrockAgentCore::Runtime) ----
     // AgentRuntimeName must match `[a-zA-Z][a-zA-Z0-9_]{0,47}` (no hyphens), so
     // the hyphenated deployment prefix cannot be interpolated; a fixed name is
@@ -545,6 +569,10 @@ export class ChatAgentStack extends cdk.Stack {
         DEPLOYMENT_PREFIX: prefix,
         AGENTCORE_GATEWAY_URL: agentCoreGatewayUrl.valueAsString,
         SHARED_MEMORY_ARN: sharedMemoryArn.valueAsString,
+        // The Sender Lambda the runtime invokes to deliver every customer-facing
+        // message (Option C). Deterministic ARN built from the shared prefix -
+        // no cross-stack import (see Sid 9).
+        SENDER_LAMBDA_ARN: senderLambdaArn,
         // Tie the runtime resource to the agent source hash so a rebuilt image
         // forces a runtime UPDATE (image re-pull). Without this the containerUri
         // stays ":latest" unchanged, CFN sees no diff, and AgentCore keeps

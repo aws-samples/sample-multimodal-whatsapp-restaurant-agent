@@ -141,6 +141,13 @@ export class WebhookStack extends cdk.Stack {
     const ingestRoleName = cdk.Fn.sub('${P}-wa-webhook-ingest-role', { P: prefix });
     const workerFunctionName = cdk.Fn.sub('${P}-wa-webhook-worker', { P: prefix });
     const workerRoleName = cdk.Fn.sub('${P}-wa-webhook-worker-role', { P: prefix });
+    // Sender Lambda (Option C): the AgentCore runtimes invoke this by a
+    // DETERMINISTIC name so their IAM grant + SENDER_LAMBDA_ARN env can be
+    // constructed from the shared DeploymentPrefix with NO cross-stack import
+    // (the webhook stack deploys after the runtimes; a deterministic name keeps
+    // the dependency one-way and ordering-agnostic).
+    const senderFunctionName = cdk.Fn.sub('${P}-wa-sender', { P: prefix });
+    const senderRoleName = cdk.Fn.sub('${P}-wa-sender-role', { P: prefix });
     const apiName = cdk.Fn.sub('${P}-wa-webhook-api', { P: prefix });
     const queueName = cdk.Fn.sub('${P}-wa-inbound', { P: prefix });
     const dlqName = cdk.Fn.sub('${P}-wa-inbound-dlq', { P: prefix });
@@ -381,6 +388,63 @@ export class WebhookStack extends cdk.Stack {
       }),
     );
 
+    // ----------------- Sender Lambda (Option C, runtime-invoked) -----------
+    // The chat / voicenotes runtimes invoke this to send WhatsApp messages as
+    // they are produced (interim narration + final answer), resolving the
+    // recipient wa_id from the window table and reusing the shared delivery
+    // path. This keeps the Access_Token AND the recipient phone (PII) in the
+    // Lambda tier - the runtime only ever passes { customer_id, text }.
+    const senderLogGroup = new logs.LogGroup(this, 'SenderLogGroup', {
+      logGroupName: cdk.Fn.sub('/aws/lambda/${FN}', { FN: senderFunctionName }),
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+    const senderRole = new iam.Role(this, 'SenderRole', {
+      roleName: senderRoleName,
+      assumedBy: new iam.ServicePrincipal('lambda.amazonaws.com'),
+      description:
+        'Execution role for the WhatsApp Sender Lambda (resolve recipient, send reply). Invoked by the AgentCore runtimes.',
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AWSLambdaBasicExecutionRole'),
+      ],
+    });
+    const senderFunction = new NodejsFunction(this, 'SenderFunction', {
+      entry: path.join(__dirname, '../lambda/webhook-handler/sender.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_24_X,
+      functionName: senderFunctionName,
+      role: senderRole,
+      logGroup: senderLogGroup,
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      description:
+        'WhatsApp Sender - runtime-invoked message delivery (resolve wa_id from the window table, send via the shared delivery path).',
+      bundling: {
+        format: OutputFormat.CJS,
+        target: 'node24',
+        minify: true,
+        sourceMap: true,
+        externalModules: ['@aws-sdk/*'], // provided by the Node 24 Lambda runtime
+      },
+      environment: {
+        // Identifiers only - never secret values (R11.6).
+        WINDOW_TABLE_NAME: windowTable.tableName,
+        ACCESS_TOKEN_SECRET_NAME: accessTokenSecretName,
+        PHONE_NUMBER_ID: phoneNumberId.valueAsString,
+      },
+    });
+    // Sender IAM: window READ (resolve wa_id) + access-token read only. No
+    // window write, no runtime invoke, no SSM/pepper - strictly a subset of the
+    // worker's grants.
+    windowTable.grantReadData(senderFunction);
+    senderRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadAccessTokenSecret',
+        actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
+        resources: workerSecretArns,
+      }),
+    );
+
     // Meta credentials are rotated in the Meta dashboard, not by AWS, so SMG4
     // (automatic rotation) is not applicable to these empty containers.
     NagSuppressions.addResourceSuppressions(
@@ -591,6 +655,11 @@ export class WebhookStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'WorkerFunctionName', {
       value: workerFunction.functionName,
       description: 'Name of the Webhook Worker Lambda function.',
+    });
+    new cdk.CfnOutput(this, 'SenderFunctionName', {
+      value: senderFunction.functionName,
+      description:
+        'Name of the WhatsApp Sender Lambda (runtime-invoked delivery). The runtimes construct this ARN from the shared DeploymentPrefix.',
     });
     if (callMapTable) {
       new cdk.CfnOutput(this, 'CallMapTableName', {

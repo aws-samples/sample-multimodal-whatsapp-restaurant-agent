@@ -72,16 +72,17 @@ describe('WebhookStack synth/config guard', () => {
     });
   });
 
-  test('two Node.js Lambdas (ingest + worker) on the Node 24 runtime', () => {
-    // Feature: whatsapp-restaurant-ai-host - async ingest/worker split (R2.5)
+  test('three Node.js Lambdas (ingest + worker + sender) on the Node 24 runtime', () => {
+    // Feature: whatsapp-restaurant-ai-host - async ingest/worker split (R2.5) +
+    // the runtime-invoked Sender Lambda (Option C).
     const template = synth();
-    // Ingest + worker. NodejsFunction bundles each entry to index.js, so both
-    // carry Handler 'index.handler'; they are distinguished by their function
-    // names and event wiring, not the CFN handler string.
-    template.resourceCountIs('AWS::Lambda::Function', 2);
+    // Ingest + worker + sender. NodejsFunction bundles each entry to index.js,
+    // so all carry Handler 'index.handler'; they are distinguished by their
+    // function names and event wiring, not the CFN handler string.
+    template.resourceCountIs('AWS::Lambda::Function', 3);
     const fns = template.findResources('AWS::Lambda::Function');
     const runtimes = Object.values(fns).map((f) => (f as any).Properties.Runtime);
-    expect(runtimes).toHaveLength(2);
+    expect(runtimes).toHaveLength(3);
     for (const rt of runtimes) {
       expect(rt).toMatch(/^nodejs/);
     }

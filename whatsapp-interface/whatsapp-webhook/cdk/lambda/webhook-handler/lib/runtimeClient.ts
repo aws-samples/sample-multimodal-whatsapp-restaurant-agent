@@ -16,8 +16,13 @@ export interface ChatPayload {
 }
 
 export interface ChatResult {
-  reply?: string;
+  // Option C status shape: the runtime sends directly via the Sender Lambda,
+  // so there is no reply to relay - this is just a status for the worker.
+  ok?: boolean;
+  messages_sent?: number;
   unsupported_attachments?: unknown;
+  // Legacy field from pre-Option-C runtime builds; ignored by the worker now.
+  reply?: string;
 }
 
 /** Deterministic AgentCore runtimeSessionId for a customer_id (>= 33 chars):

@@ -151,7 +151,12 @@ export async function handleChatMessage(
     await sendText(msg.sender, RESEND_UNSUPPORTED, accessToken, customerId);
   }
 
-  // 5. Invoke the Chat Runtime and relay the reply (R4.4).
+  // 5. Invoke the Chat Runtime. Under Option C the runtime OWNS delivery: it
+  //    streams the turn and sends each message (interim + final, plus its own
+  //    error fallback) to WhatsApp via the Sender Lambda. So the worker does
+  //    NOT relay a reply here - it only needs to cover a transport-level invoke
+  //    failure (a null result), where the runtime never ran and thus could not
+  //    have sent anything.
   const result = await invokeChat({
     session_id: customerId, // R5.1
     customer_id: customerId,
@@ -159,12 +164,13 @@ export async function handleChatMessage(
     images,
     documents,
   });
-  if (!result || !result.reply) {
-    console.warn(`no reply from Chat Runtime for ${customerId}`);
+  if (!result) {
+    console.warn(`Chat Runtime invoke failed for ${customerId}; sending fallback`);
     await sendText(msg.sender, COULD_NOT_PROCESS, accessToken, customerId);
-    return { status: 'no_reply', customerId };
+    return { status: 'invoke_failed', customerId };
   }
 
-  await sendText(msg.sender, result.reply, accessToken, customerId);
+  // A non-null result means the runtime handled delivery (status only, no
+  // reply to relay). Surface it for metrics/tests.
   return { status: 'ok', customerId, unsupported };
 }

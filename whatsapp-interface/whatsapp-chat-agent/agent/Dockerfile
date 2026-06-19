@@ -29,7 +29,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 # Copy application source.
-COPY chat_agent.py session_store.py system_prompt.py memory_client.py mcp_tools.py ./
+COPY chat_agent.py sender_client.py session_store.py system_prompt.py memory_client.py mcp_tools.py ./
 
 # Smoke test - fail the build early if imports are broken.
 RUN python -c "import chat_agent"

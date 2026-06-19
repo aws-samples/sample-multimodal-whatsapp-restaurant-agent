@@ -200,6 +200,12 @@ class _CustomerIdInjector:
         prior = args.get("customerId")
         args["customerId"] = self._customer_id  # unconditional - model is untrusted
         tool_use["input"] = args
+        logger.info(
+            "[mcp] before tool call name=%s id=%s input=%s",
+            tool_use.get("name"),
+            tool_use.get("toolUseId"),
+            args,
+        )
         if prior is not None and prior != self._customer_id:
             logger.warning(
                 "customerId supplied by model; overwritten",
