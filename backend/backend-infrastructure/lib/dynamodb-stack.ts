@@ -62,6 +62,11 @@ export class DynamoDBStack extends cdk.Stack {
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: true,
       },
+      // Stream the before/after images so the order-notifier (Task 27) can react
+      // to status transitions (e.g. confirmed -> in-preparation -> ready) and
+      // send proactive WhatsApp updates. NEW_AND_OLD_IMAGES lets the notifier
+      // compare OldImage.status vs NewImage.status to fire only on a real change.
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
     });
     ordersTable.addGlobalSecondaryIndex({
       indexName: 'GSI1',
@@ -124,6 +129,10 @@ export class DynamoDBStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'OrdersTableName', {
       value: ordersTable.tableName,
       description: 'Orders table name',
+    });
+    new cdk.CfnOutput(this, 'OrdersStreamArn', {
+      value: ordersTable.tableStreamArn ?? '',
+      description: 'Orders table DynamoDB Stream ARN (consumed by the order-notifier)',
     });
     new cdk.CfnOutput(this, 'OrdersTableArn', {
       value: ordersTable.tableArn,

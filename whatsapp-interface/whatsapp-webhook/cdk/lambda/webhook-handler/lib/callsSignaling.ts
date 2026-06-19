@@ -33,6 +33,7 @@ import {
 } from './runtimeClient.js';
 import { sendCallAction, type CallAction } from './whatsappClient.js';
 import { putMapping, getMapping, deleteMapping, type CallMapping } from './callMap.js';
+import { updateInbound } from './windowTable.js';
 
 export interface CallDeps {
   invokeCallOffer: (sessionId: string, callId: string, offerSdp: string, customerId?: string) => Promise<CallAnswer | null>;
@@ -90,6 +91,18 @@ async function handleConnect(ev: CallEvent, token: string, deps: CallDeps): Prom
     customerId = await deps.deriveCustomerId(ev.from);
   } catch {
     console.warn(`calls: customer_id derivation failed for call ${ev.id} (continuing without it)`);
+  }
+
+  // Record the caller's wa_id + open the 24-hour window (best-effort) so the
+  // order-notifier (Task 27) can send proactive "order ready" updates for an
+  // order placed during this call. Direct call (not via deps) like the message
+  // handlers; in unit tests WINDOW_TABLE_NAME is unset so this no-ops.
+  if (customerId) {
+    try {
+      await updateInbound(customerId, Math.floor(Date.now() / 1000), ev.from);
+    } catch {
+      /* best-effort: never block call signaling on the window write */
+    }
   }
 
   const sessionId = callSessionId(ev.id);

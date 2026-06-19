@@ -21,28 +21,62 @@ async function client() {
   return new DynamoDBClient({ region: process.env.AWS_REGION ?? 'us-east-1' });
 }
 
-/** Set the window start for a customer to ts (R6.3). Returns true on success;
- *  a failure is logged but never breaks message handling. */
-export async function updateInbound(customerId: string, ts: number): Promise<boolean> {
+/** Set the window start for a customer to ts (R6.3), and record the recipient
+ *  `waId` (the WhatsApp wa_id / E.164) so a proactive notifier (Task 27) can
+ *  message the customer later - the `wa-` customer_id is a non-reversible hash,
+ *  so the destination phone must be persisted at inbound time. The phone lives
+ *  ONLY here (encrypted at rest, TTL'd) to keep the PII surface minimal.
+ *  Returns true on success; a failure is logged but never breaks handling. */
+export async function updateInbound(customerId: string, ts: number, waId?: string): Promise<boolean> {
   const name = process.env.WINDOW_TABLE_NAME;
   if (!name) return false;
   try {
     const { PutItemCommand } = await import('@aws-sdk/client-dynamodb');
     const db = await client();
-    await db.send(
-      new PutItemCommand({
-        TableName: name,
-        Item: {
-          customerId: { S: customerId },
-          lastInboundTs: { N: String(ts) },
-          ttl: { N: String(ts + TTL_SECONDS) },
-        },
-      }),
-    );
+    const item: Record<string, { S: string } | { N: string }> = {
+      customerId: { S: customerId },
+      lastInboundTs: { N: String(ts) },
+      ttl: { N: String(ts + TTL_SECONDS) },
+    };
+    if (waId) {
+      item.waId = { S: waId };
+    }
+    await db.send(new PutItemCommand({ TableName: name, Item: item }));
     return true;
   } catch (err) {
     console.warn(`window update failed for ${customerId}: ${String(err)}`);
     return false;
+  }
+}
+
+/** Customer contact + window state read by the proactive notifier (Task 27). */
+export interface CustomerContact {
+  /** Recipient wa_id / E.164 to send to, or null if not recorded. */
+  waId: string | null;
+  /** Epoch seconds of the last inbound, or null if never opened. */
+  lastInboundTs: number | null;
+}
+
+/** Read the recipient `waId` + `lastInboundTs` for a customer, so the notifier
+ *  can decide window state and address the message. Returns nulls on
+ *  absent/failed reads (the notifier then skips - never throws). */
+export async function getContact(customerId: string): Promise<CustomerContact> {
+  const name = process.env.WINDOW_TABLE_NAME;
+  if (!name) return { waId: null, lastInboundTs: null };
+  try {
+    const { GetItemCommand } = await import('@aws-sdk/client-dynamodb');
+    const db = await client();
+    const resp = await db.send(
+      new GetItemCommand({ TableName: name, Key: { customerId: { S: customerId } } }),
+    );
+    const n = resp.Item?.lastInboundTs?.N;
+    return {
+      waId: resp.Item?.waId?.S ?? null,
+      lastInboundTs: n ? Number(n) : null,
+    };
+  } catch (err) {
+    console.warn(`window contact read failed for ${customerId}: ${String(err)}`);
+    return { waId: null, lastInboundTs: null };
   }
 }
 

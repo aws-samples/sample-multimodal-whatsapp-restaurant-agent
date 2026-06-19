@@ -112,9 +112,10 @@ export async function handleChatMessage(
     return { status: 'gated', customerId };
   }
 
-  // 3. Update the 24-hour window on this inbound (R6.3).
+  // 3. Update the 24-hour window on this inbound (R6.3), recording the sender's
+  //    wa_id so the order-notifier (Task 27) can message them proactively.
   if (msg.timestamp !== null) {
-    await updateInbound(customerId, msg.timestamp);
+    await updateInbound(customerId, msg.timestamp, msg.sender);
   }
 
   // Show the "typing..." indicator now that we know we will invoke the runtime,

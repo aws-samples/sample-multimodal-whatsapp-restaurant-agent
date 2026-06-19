@@ -59,6 +59,30 @@ export function renderConfirmation(order: OrderConfirmation, timeZone: string = 
   return text;
 }
 
+/** Statuses the proactive notifier (Task 27) sends an update for. A freshly
+ *  placed order is `confirmed`; the kitchen simulator advances it
+ *  `confirmed -> in-preparation -> ready`, and each of these transitions is
+ *  worth a customer-facing message. (`received`/`completed` are not notified.) */
+export const NOTIFIABLE_STATUSES: readonly OrderStatus[] = ['in-preparation', 'ready'];
+
+export function isNotifiableStatus(value: string): value is OrderStatus {
+  return (NOTIFIABLE_STATUSES as readonly string[]).includes(value);
+}
+
+/** Pure: the proactive status-update text for a kitchen-lifecycle transition
+ *  (Task 27). Deterministic given (orderRef, status). Returns null for a status
+ *  that should not trigger a customer message, so callers can guard on it. */
+export function renderStatusUpdate(orderRef: string, status: string): string | null {
+  switch (status) {
+    case 'in-preparation':
+      return `Good news! Your order ${orderRef} is now being prepared in the kitchen.`;
+    case 'ready':
+      return `Your order ${orderRef} is ready for pickup. See you soon!`;
+    default:
+      return null;
+  }
+}
+
 /** Send an order confirmation. Returns true on a 2xx. Never mutates `order`
  *  (R14.7) and never throws. On exhaustion emits a delivery-failure metric that
  *  names the order reference. */

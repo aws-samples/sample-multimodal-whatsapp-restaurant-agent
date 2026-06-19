@@ -382,6 +382,20 @@ destroy_stack() {
   fi
 }
 
+# Step 0: OrderNotifierStack (destroy first - it references the Orders stream +
+# window table by import, and its EventBridge rule / stream event source should
+# go before the upstream stacks are torn down).
+if [ "$(is_deployed wa-order-notifier)" = "true" ] || [ "$IGNORE_MISSING" = true ]; then
+  print_section "Step 0: Destroying OrderNotifierStack (wa-order-notifier)"
+  destroy_stack \
+    "backend/order-notifier" \
+    "OrderNotifierStack" \
+    "wa-order-notifier.json" \
+    "wa-order-notifier"
+else
+  print_info "wa-order-notifier not deployed; skipping"
+fi
+
 # Step 1: WebhookStack
 if [ "$SKIP_WEBHOOK" = false ]; then
   print_section "Step 1: Destroying WebhookStack (wa-webhook)"

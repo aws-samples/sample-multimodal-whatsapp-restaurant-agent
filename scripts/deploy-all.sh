@@ -69,6 +69,14 @@ NO_ROLLBACK=false
 ONLY_COMPONENT=""      # empty = deploy all layers; when set, run ONLY that one
 LOW_STORAGE_MODE=false # --low-storage-mode: wipe sibling node_modules before each npm install
 ASSUME_YES=false       # --yes / --non-interactive: never block on a prompt
+# --skip-kitchen-simulator: the order-notifier (Task 27) ALWAYS deploys the
+# real, stream-driven notifier. The KITCHEN SIMULATOR is optional DEMO tooling -
+# a scheduled Lambda that fake-advances order status (confirmed -> in-preparation
+# -> ready over ~2 min) purely so an operator can SEE the proactive status
+# messages land on WhatsApp without a real kitchen/POS. It is deployed BY DEFAULT
+# so the sample is testable out of the box; pass --skip-kitchen-simulator to omit
+# it (e.g. a real deployment whose POS will advance order status for real).
+SKIP_KITCHEN_SIM=false
 OUTPUTS_DIR="cdk-outputs"
 
 # Parse arguments
@@ -81,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --no-rollback)      NO_ROLLBACK=true;    shift ;;
     --only)             ONLY_COMPONENT="$2"; shift 2 ;;
     --low-storage-mode) LOW_STORAGE_MODE=true; shift ;;
+    --skip-kitchen-simulator) SKIP_KITCHEN_SIM=true; shift ;;
     --yes|--non-interactive) ASSUME_YES=true; shift ;;
     --help)
       cat <<'USAGE'
@@ -96,6 +105,14 @@ Options:
                               fresh = cleanup-all.sh --force first.
   --force-deploy              Redeploy every layer even if state says done.
   --skip-preflight            Skip scripts/preflight-check.sh.
+  --skip-kitchen-simulator    Do NOT deploy the optional DEMO kitchen simulator
+                              in the order-notifier layer (Task 27). The real,
+                              stream-driven order-status NOTIFIER is always
+                              deployed; the simulator is a scheduled Lambda that
+                              fake-advances order status so you can SEE the
+                              "being prepared" / "ready" WhatsApp messages arrive
+                              without a real kitchen/POS. Deployed by default for
+                              easy validation; pass this flag to omit it.
   --low-storage-mode          Before each `npm install`, wipe the
                               `node_modules/` directory from every OTHER CDK
                               project in this workspace. Keeps disk usage
@@ -117,7 +134,7 @@ Options:
                                 wa-network, wa-ddb, wa-location, wa-lambdas,
                                 wa-apigw, wa-gateway, wa-memory,
                                 wa-runtime-call, wa-runtime-voicenotes,
-                                wa-runtime-chat, wa-webhook
+                                wa-runtime-chat, wa-webhook, wa-order-notifier
                               Example: --only wa-memory
   --yes, --non-interactive    Never block on an interactive prompt. Use in CI
                               or any piped/non-TTY run.
@@ -328,7 +345,7 @@ if ! [[ "$PROJECT_PREFIX" =~ ^[a-z][a-z0-9-]{1,19}$ ]]; then
 fi
 
 # Validate --only key against the known component set.
-VALID_COMPONENTS="wa-network wa-ddb wa-location wa-lambdas wa-apigw wa-gateway wa-memory wa-runtime-call wa-runtime-voicenotes wa-runtime-chat wa-webhook"
+VALID_COMPONENTS="wa-network wa-ddb wa-location wa-lambdas wa-apigw wa-gateway wa-memory wa-runtime-call wa-runtime-voicenotes wa-runtime-chat wa-webhook wa-order-notifier"
 if [ -n "$ONLY_COMPONENT" ]; then
   if ! echo " $VALID_COMPONENTS " | grep -q " $ONLY_COMPONENT "; then
     print_error "--only must be one of: $VALID_COMPONENTS"
@@ -430,7 +447,7 @@ preflight_stuck_stack_sweep() {
   local stuck_statuses="REVIEW_IN_PROGRESS ROLLBACK_COMPLETE"
   local project_stacks="NetworkStack DynamoDBStack LocationStack LambdaStack \
     ApiGatewayStack AgentCoreGatewayStack MemoryStack VoiceWebrtcStack \
-    VoiceNotesStack ChatAgentStack WebhookStack"
+    VoiceNotesStack ChatAgentStack WebhookStack OrderNotifierStack"
   for stack in $project_stacks; do
     local status
     status=$(aws cloudformation describe-stacks --region us-east-1 \
@@ -947,6 +964,75 @@ else
 fi
 
 WEBHOOK_URL=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-webhook.json" "WebhookStack" "WebhookUrl")
+
+################################################################################
+# Layer 9 - OrderNotifierStack (wa-order-notifier) - proactive order updates.
+#
+# Task 27: a DynamoDB-Streams-triggered notifier that sends a WhatsApp message
+# on each order-status transition (in-preparation, ready), plus a DEMO kitchen
+# simulator that advances order status over ~2 min so the notifier fires end to
+# end. Consumes the Orders table name + stream ARN (DynamoDBStack), the window
+# table name + access-token secret name (derived, owned by WebhookStack), and
+# the phone number id. Requires the wa-ddb layer to have DynamoDB Streams
+# enabled on the Orders table (re-deploy wa-ddb if OrdersStreamArn is empty).
+################################################################################
+ORDERS_TABLE_NAME=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-ddb.json" "DynamoDBStack" "OrdersTableName")
+ORDERS_STREAM_ARN=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-ddb.json" "DynamoDBStack" "OrdersStreamArn")
+# Derived (deterministic) names owned by WebhookStack.
+WA_WINDOW_TABLE_NAME="${PROJECT_PREFIX}-wa-window"
+WA_ACCESS_TOKEN_SECRET_NAME="${PROJECT_PREFIX}-wa-access-token"
+
+print_section "Layer 9: OrderNotifierStack (wa-order-notifier)"
+
+if ! module_ready "backend/order-notifier"; then
+  notify_not_implemented "wa-order-notifier" "backend/order-notifier" "Task 27 (order notifier)"
+elif [ -z "$ORDERS_STREAM_ARN" ]; then
+  print_warning "wa-order-notifier: Orders stream ARN not available yet - skipping"
+  print_info    "Re-deploy the wa-ddb layer first so DynamoDB Streams are enabled on the Orders"
+  print_info    "table (it emits the OrdersStreamArn output the notifier consumes - Task 27)."
+elif should_deploy wa-order-notifier; then
+  # The order-notifier layer ALWAYS deploys the real, stream-driven notifier
+  # (it reacts to genuine order-status changes and delivers WhatsApp updates).
+  # The KITCHEN SIMULATOR is OPTIONAL demo tooling: a scheduled Lambda that
+  # fake-advances order status (confirmed -> in-preparation -> ready over ~2 min)
+  # so you can validate that proactive status messages reach the customer
+  # WITHOUT a real kitchen/POS. It is enabled by default; --skip-kitchen-simulator
+  # omits it (e.g. when your own POS will drive the status transitions).
+  KITCHEN_SIM_CONTEXT=true
+  if [ "$SKIP_KITCHEN_SIM" = true ]; then
+    KITCHEN_SIM_CONTEXT=false
+    print_info "wa-order-notifier: deploying the order-status NOTIFIER only."
+    print_info "  The optional demo kitchen simulator is SKIPPED (--skip-kitchen-simulator)."
+    print_info "  Your kitchen/POS is expected to advance order status; the notifier will"
+    print_info "  deliver a WhatsApp update on each transition into in-preparation / ready."
+  else
+    print_info "wa-order-notifier: deploying the order-status NOTIFIER + the optional DEMO"
+    print_info "  kitchen simulator. The simulator fake-advances each order"
+    print_info "  confirmed -> in-preparation -> ready over ~2 minutes so you can SEE the"
+    print_info "  proactive 'being prepared' and 'ready' WhatsApp messages arrive end to end."
+    print_info "  Re-run with --skip-kitchen-simulator to deploy the notifier alone."
+  fi
+  (
+    cd "$WORKSPACE_ROOT/backend/order-notifier"
+    safe_npm_install
+    # shellcheck disable=SC2086
+    npx cdk deploy OrderNotifierStack \
+      --require-approval never \
+      $CDK_ROLLBACK_FLAG \
+      --context "enableKitchenSimulator=${KITCHEN_SIM_CONTEXT}" \
+      --parameters "OrderNotifierStack:DeploymentPrefix=${PROJECT_PREFIX}" \
+      --parameters "OrderNotifierStack:OrdersTableName=${ORDERS_TABLE_NAME}" \
+      --parameters "OrderNotifierStack:OrdersStreamArn=${ORDERS_STREAM_ARN}" \
+      --parameters "OrderNotifierStack:WindowTableName=${WA_WINDOW_TABLE_NAME}" \
+      --parameters "OrderNotifierStack:AccessTokenSecretName=${WA_ACCESS_TOKEN_SECRET_NAME}" \
+      --parameters "OrderNotifierStack:PhoneNumberId=${WHATSAPP_PHONE_NUMBER_ID:-}" \
+      --outputs-file "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-order-notifier.json"
+  )
+  update_state "wa-order-notifier" true "{\"prefix\":\"${PROJECT_PREFIX}\"}"
+  print_success "wa-order-notifier deployed"
+else
+  print_info "wa-order-notifier already deployed; skipping"
+fi
 
 ################################################################################
 # Final status line.

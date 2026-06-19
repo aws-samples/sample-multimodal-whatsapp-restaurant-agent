@@ -99,9 +99,10 @@ export async function handleVoiceNote(
   }
 
   // 2. Update the 24-hour window on this inbound (R6.3). This also keeps the
-  //    window open so the voice reply can be sent free-form (R7.5).
+  //    window open so the voice reply can be sent free-form (R7.5), and records
+  //    the sender's wa_id so the order-notifier (Task 27) can reach them.
   if (msg.timestamp !== null) {
-    await updateInbound(customerId, msg.timestamp);
+    await updateInbound(customerId, msg.timestamp, msg.sender);
   }
 
   // Show the "typing..." indicator while we download + run the bounded Sonic
