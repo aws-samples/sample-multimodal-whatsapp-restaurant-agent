@@ -34,49 +34,46 @@ exports.handler = async (event) => {
 
   try {
     const body = JSON.parse(event.body || '{}');
-    const { customerId, locationId } = body;
+    const { customerId } = body;
 
-    // R9 baseline fields — accept on every call, defaults preserve older callers.
-    // channel: any string; logged for observability.
+    // channel: any string; logged for observability. Model/caller controlled.
     const channel =
       typeof body.channel === 'string' && body.channel.length > 0
         ? body.channel
         : 'web';
-    // anonymousCaller: strictly boolean; `=== true` coercion.
-    const anonymousCaller = body.anonymousCaller === true;
-    // fromPhoneNumber: string; validated based on anonymousCaller flag.
+    // fromPhoneNumber: optional. Channel-neutral callers (WhatsApp, web)
+    // identify purely by customerId and send no phone. Only the E.164 shape
+    // is enforced, and only when a non-empty value is actually supplied.
     const fromPhoneNumberRaw =
       typeof body.fromPhoneNumber === 'string' ? body.fromPhoneNumber : '';
+    // anonymousCaller is informational on the persisted row. Honor an explicit
+    // boolean if sent; otherwise derive it (no phone == anonymous).
+    const anonymousCaller =
+      typeof body.anonymousCaller === 'boolean'
+        ? body.anonymousCaller
+        : fromPhoneNumberRaw === '';
 
-    if (!customerId || !locationId) {
+    if (!customerId) {
       return jsonResponse(400, {
-        error: 'Missing required parameters: customerId, locationId',
+        error: 'Missing required parameter: customerId',
       });
     }
 
-    // R9 validation: if anonymousCaller=false, fromPhoneNumber MUST match
-    // E.164; if anonymousCaller=true, fromPhoneNumber MUST be empty.
-    if (!anonymousCaller) {
-      if (!E164_REGEX.test(fromPhoneNumberRaw)) {
-        return jsonResponse(400, {
-          error: 'Invalid fromPhoneNumber',
-          message:
-            'anonymousCaller=false requires fromPhoneNumber to match E.164 (^\\+[1-9]\\d{1,14}$).',
-        });
-      }
-    } else {
-      if (fromPhoneNumberRaw !== '') {
-        return jsonResponse(400, {
-          error: 'Invalid fromPhoneNumber',
-          message:
-            'anonymousCaller=true requires fromPhoneNumber to be empty.',
-        });
-      }
+    // Validate fromPhoneNumber only when supplied — empty is allowed for
+    // channel-neutral callers that identify by customerId alone.
+    if (fromPhoneNumberRaw !== '' && !E164_REGEX.test(fromPhoneNumberRaw)) {
+      return jsonResponse(400, {
+        error: 'Invalid fromPhoneNumber',
+        message:
+          'When supplied, fromPhoneNumber must match E.164 (^\\+[1-9]\\d{1,14}$).',
+      });
     }
 
     const docClient = getDocClient();
 
-    // Get cart.
+    // Get cart. The cart is the authoritative source for both the line items
+    // AND the locationId (recorded by AddToCart). We never trust a model- or
+    // caller-supplied locationId for order placement.
     const cart = await docClient.send(
       new GetCommand({
         TableName: CARTS_TABLE_NAME,
@@ -89,6 +86,17 @@ exports.handler = async (event) => {
         error: 'Cart is empty',
         message:
           'No items in cart. Please add items before placing an order.',
+      });
+    }
+
+    // Resolve locationId from the cart (authoritative). Fall back to a body
+    // value only for older cart rows that predate locationId persistence.
+    const locationId = cart.Item.locationId || body.locationId;
+    if (!locationId) {
+      return jsonResponse(400, {
+        error: 'Unable to resolve locationId',
+        message:
+          'Cart has no associated locationId. Re-add items so the cart records its location.',
       });
     }
 

@@ -1,4 +1,11 @@
-// Unit tests for Task 2.5 — R9 baseline body shape on PlaceOrder Lambda.
+// Unit tests for the PlaceOrder Lambda.
+//
+// Contract (post channel-neutral refactor):
+//   - customerId is the ONLY required body field.
+//   - locationId is resolved from the cart (authoritative), not the body.
+//   - fromPhoneNumber is optional; when non-empty it MUST match E.164.
+//     Channel-neutral callers (WhatsApp, web) send no phone and identify by
+//     customerId alone.
 //
 // We use Node's built-in `node:test` runner + `assert`, and inject a hand-rolled
 // DynamoDB Document Client stub via `setDocClient()` (exported from the handler
@@ -47,8 +54,10 @@ function makeStubDocClient({ cart, location }) {
   return { docClient, puts, deletes };
 }
 
+// Cart now carries the authoritative locationId (written by AddToCart).
 const happyCart = {
-  PK: 'CUSTOMER#pstn-abc123',
+  PK: 'CUSTOMER#cust-abc123',
+  locationId: 'loc-1',
   items: [
     { itemId: 'burger', name: 'Burger', price: 7.5, quantity: 2 },
     { itemId: 'fries', name: 'Fries', price: 2.5, quantity: 1 },
@@ -60,7 +69,7 @@ const happyLocation = {
   name: 'Downtown',
 };
 
-test('identified telephony caller — 200 + R9 fields persisted', async () => {
+test('identified caller with valid phone — 200 + fields persisted, locationId from cart', async () => {
   const { docClient, puts } = makeStubDocClient({
     cart: { ...happyCart, PK: 'CUSTOMER#pstn-abc123' },
     location: happyLocation,
@@ -70,7 +79,6 @@ test('identified telephony caller — 200 + R9 fields persisted', async () => {
   const res = await handlerModule.handler({
     body: JSON.stringify({
       customerId: 'pstn-abc123',
-      locationId: 'loc-1',
       channel: 'telephony',
       anonymousCaller: false,
       fromPhoneNumber: '+14155551234',
@@ -83,47 +91,85 @@ test('identified telephony caller — 200 + R9 fields persisted', async () => {
   assert.equal(parsed.order.anonymousCaller, false);
   assert.equal(parsed.order.fromPhoneNumber, '+14155551234');
   assert.equal(parsed.order.customerId, 'pstn-abc123');
+  // locationId is resolved from the cart, not the body.
+  assert.equal(parsed.order.locationId, 'loc-1');
   // Subtotal 17.5, tax 1.75, total 19.25.
   assert.equal(parsed.order.subtotal, 17.5);
   assert.equal(parsed.order.tax, 1.75);
   assert.equal(parsed.order.total, 19.25);
 
-  // The put went to the Orders table with the three baseline fields.
   assert.equal(puts.length, 1);
   assert.equal(puts[0].TableName, 'test-Orders');
   assert.equal(puts[0].Item.channel, 'telephony');
-  assert.equal(puts[0].Item.anonymousCaller, false);
   assert.equal(puts[0].Item.fromPhoneNumber, '+14155551234');
 });
 
-test('anonymous telephony caller — 200 + anonymousCaller=true + empty fromPhoneNumber', async () => {
-  const { docClient, puts } = makeStubDocClient({
-    cart: { ...happyCart, PK: 'CUSTOMER#pstn-anonymous-deadbeef' },
+test('channel-neutral caller (WhatsApp/web): no phone, no flag — 200', async () => {
+  // This is the bug fix: a caller that sends only customerId (+ cart) must
+  // succeed. Previously this returned 400 "Invalid fromPhoneNumber".
+  const { docClient, puts, deletes } = makeStubDocClient({
+    cart: { ...happyCart, PK: 'CUSTOMER#wa-deadbeef' },
     location: happyLocation,
   });
   handlerModule.setDocClient(docClient);
 
   const res = await handlerModule.handler({
     body: JSON.stringify({
-      customerId: 'pstn-anonymous-deadbeef',
-      locationId: 'loc-1',
-      channel: 'telephony',
-      anonymousCaller: true,
-      fromPhoneNumber: '',
+      customerId: 'wa-deadbeef',
     }),
   });
 
   assert.equal(res.statusCode, 200);
   const parsed = JSON.parse(res.body);
+  // No phone supplied -> anonymousCaller defaults true, empty phone, channel 'web'.
   assert.equal(parsed.order.anonymousCaller, true);
   assert.equal(parsed.order.fromPhoneNumber, '');
-  assert.equal(parsed.order.channel, 'telephony');
-  assert.equal(puts[0].Item.anonymousCaller, true);
-  assert.equal(puts[0].Item.fromPhoneNumber, '');
+  assert.equal(parsed.order.channel, 'web');
+  assert.equal(parsed.order.locationId, 'loc-1');
+  assert.equal(parsed.order.status, 'confirmed');
+  // Order persisted and cart cleared.
+  assert.equal(puts.length, 1);
+  assert.equal(deletes.length, 1);
 });
 
-test('malformed fromPhoneNumber when anonymousCaller=false → 400', async () => {
-  // No cart/location lookups should be reached when validation rejects.
+test('explicit channel is passed through to the order row', async () => {
+  const { docClient, puts } = makeStubDocClient({
+    cart: { ...happyCart, PK: 'CUSTOMER#wa-deadbeef' },
+    location: happyLocation,
+  });
+  handlerModule.setDocClient(docClient);
+
+  const res = await handlerModule.handler({
+    body: JSON.stringify({
+      customerId: 'wa-deadbeef',
+      channel: 'whatsapp',
+    }),
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(JSON.parse(res.body).order.channel, 'whatsapp');
+  assert.equal(puts[0].Item.channel, 'whatsapp');
+});
+
+test('locationId is read from the cart, ignoring a body-supplied value', async () => {
+  const { docClient } = makeStubDocClient({
+    cart: { ...happyCart, PK: 'CUSTOMER#cust-loc', locationId: 'loc-from-cart' },
+    location: happyLocation,
+  });
+  handlerModule.setDocClient(docClient);
+
+  const res = await handlerModule.handler({
+    body: JSON.stringify({
+      customerId: 'cust-loc',
+      locationId: 'loc-from-body-should-be-ignored',
+    }),
+  });
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(JSON.parse(res.body).order.locationId, 'loc-from-cart');
+});
+
+test('malformed non-empty fromPhoneNumber -> 400, no writes', async () => {
   const { docClient, puts, deletes } = makeStubDocClient({
     cart: happyCart,
     location: happyLocation,
@@ -133,9 +179,6 @@ test('malformed fromPhoneNumber when anonymousCaller=false → 400', async () =>
   const res = await handlerModule.handler({
     body: JSON.stringify({
       customerId: 'pstn-abc123',
-      locationId: 'loc-1',
-      channel: 'telephony',
-      anonymousCaller: false,
       fromPhoneNumber: 'bogus',
     }),
   });
@@ -143,11 +186,10 @@ test('malformed fromPhoneNumber when anonymousCaller=false → 400', async () =>
   assert.equal(res.statusCode, 400);
   assert.equal(puts.length, 0);
   assert.equal(deletes.length, 0);
-  const parsed = JSON.parse(res.body);
-  assert.match(parsed.error, /Invalid fromPhoneNumber/);
+  assert.match(JSON.parse(res.body).error, /Invalid fromPhoneNumber/);
 });
 
-test('anonymousCaller=true with non-empty fromPhoneNumber → 400', async () => {
+test('missing customerId -> 400', async () => {
   const { docClient, puts } = makeStubDocClient({
     cart: happyCart,
     location: happyLocation,
@@ -155,38 +197,26 @@ test('anonymousCaller=true with non-empty fromPhoneNumber → 400', async () => 
   handlerModule.setDocClient(docClient);
 
   const res = await handlerModule.handler({
-    body: JSON.stringify({
-      customerId: 'pstn-anonymous-deadbeef',
-      locationId: 'loc-1',
-      channel: 'telephony',
-      anonymousCaller: true,
-      fromPhoneNumber: '+14155551234',
-    }),
+    body: JSON.stringify({ locationId: 'loc-1' }),
   });
 
   assert.equal(res.statusCode, 400);
   assert.equal(puts.length, 0);
+  assert.match(JSON.parse(res.body).error, /customerId/);
 });
 
-test('default channel falls back to "web" when not provided', async () => {
+test('empty cart -> 400', async () => {
   const { docClient, puts } = makeStubDocClient({
-    cart: happyCart,
+    cart: { PK: 'CUSTOMER#cust-empty', locationId: 'loc-1', items: [] },
     location: happyLocation,
   });
   handlerModule.setDocClient(docClient);
 
-  // No channel, no anonymousCaller, no fromPhoneNumber — legacy web caller.
-  // anonymousCaller defaults to false; fromPhoneNumber defaults to '';
-  // validation: anonymousCaller=false + fromPhoneNumber='' → rejected by R9.
   const res = await handlerModule.handler({
-    body: JSON.stringify({
-      customerId: 'pstn-abc123',
-      locationId: 'loc-1',
-    }),
+    body: JSON.stringify({ customerId: 'cust-empty' }),
   });
 
-  // Legacy "no phone number" web callers MUST now send anonymousCaller=true
-  // to clear validation — this is the R9 baseline. The test locks that contract in.
   assert.equal(res.statusCode, 400);
   assert.equal(puts.length, 0);
+  assert.match(JSON.parse(res.body).error, /Cart is empty/);
 });
