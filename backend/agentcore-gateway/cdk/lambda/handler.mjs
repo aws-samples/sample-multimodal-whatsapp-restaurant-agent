@@ -408,6 +408,12 @@ async function fetchOpenApiSchema(apiGatewayId, stage) {
     stageName: stage,
     exportType: 'oas30',
     accepts: 'application/json',
+    // Merge published documentation parts (operation + query-parameter
+    // descriptions) into the native OpenAPI fields. Requires a documentation
+    // version associated with the stage (set in ApiGatewayStack). Without this
+    // the export omits operation/query-param descriptions, so the derived MCP
+    // tools would list without purpose text or parameter examples.
+    parameters: { extensions: 'documentation' },
   }));
 
   // resp.body is a Uint8Array

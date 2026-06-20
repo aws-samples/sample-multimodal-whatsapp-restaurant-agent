@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import { createHash } from 'crypto';
 import { Construct } from 'constructs';
 import { NagSuppressions } from 'cdk-nag';
 
@@ -33,7 +34,159 @@ export class ApiGatewayStack extends cdk.Stack {
     });
     const prefix = deploymentPrefix.valueAsString;
 
-    // Ten CfnParameters — one per ordering Lambda ARN.
+    // ─────────────────────────────────────────────────────────────────────────
+    // Tool/parameter documentation (Option B).
+    //
+    // The AgentCore Gateway fronts this REST API as MCP tools. The tool
+    // descriptions the model sees come from each operation's description, and
+    // the per-parameter guidance comes from request-body model schemas (for
+    // POST/PUT bodies) and from query-parameter descriptions (for GETs). API
+    // Gateway only emits operation/query-parameter descriptions into the OpenAPI
+    // export when they are published as documentation parts in a documentation
+    // version associated with the stage. We define every operation + query
+    // parameter description here, snapshot them in a CfnDocumentationVersion
+    // (id = content hash, so it re-snapshots only when text changes), and
+    // associate that version with the prod stage. The gateway's handler exports
+    // with `extensions=documentation`, so these merge into native OAS fields.
+    //
+    // ASCII-only: every string here is CFN-bound (working agreement #7).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Shared id-format guidance reused across body models and query params so
+    // the model picks opaque ids from context instead of substituting a
+    // restaurant name or street address (which the backend cannot resolve).
+    const LOCATION_ID_DESC =
+      'Opaque restaurant location id, format `loc-<business-slug>-<suffix>` ' +
+      '(example: `loc-amazing-burgers-r5KVG7N1`). Obtain it from GetNearestLocations ' +
+      'results or the existing cart (GetCart). Never pass a restaurant name ' +
+      '(e.g. "Amazing Burgers") or a street address (e.g. "123 Main Street").';
+    const ITEM_ID_DESC =
+      'Menu item id from a GetMenu result, e.g. `chicken-tenders`. Use the exact ' +
+      'itemId returned by GetMenu; never guess or invent one.';
+    const CUSTOMER_ID_DESC =
+      'Opaque customer id, supplied automatically by the system. Do not ask the ' +
+      'customer for it or set it yourself.';
+
+    // One entry per documentation part. `type: METHOD` carries the operation
+    // (tool) description; `type: QUERY_PARAMETER` carries a query-arg description.
+    type DocSpec = {
+      location: { type: string; method?: string; path?: string; name?: string };
+      description: string;
+    };
+    const docSpecs: DocSpec[] = [
+      // ---- Operation (tool) descriptions ----
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/customers/profile' },
+        description:
+          "Look up the customer's saved profile: name, contact, saved preferences " +
+          'and loyalty status. The customerId is supplied automatically by the ' +
+          'system, so you never need to ask the customer for it. Use this to greet ' +
+          'a returning customer or recall their usual preferences.',
+      },
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/customers/orders' },
+        description:
+          "Retrieve the customer's recent past orders (items, locations, dates). " +
+          'The customerId is supplied automatically by the system. Use this to ' +
+          'reorder a usual item or answer questions about order history.',
+      },
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/menu' },
+        description:
+          'Get the menu (items, prices, descriptions, availability) for ONE ' +
+          'restaurant location. Required query parameter locationId is the opaque ' +
+          'location id such as `loc-amazing-burgers-r5KVG7N1`; obtain it from ' +
+          'GetNearestLocations or GetCart. Never pass a restaurant name or a street ' +
+          'address as locationId. Call this before adding items so you use the real ' +
+          'itemIds it returns (e.g. `chicken-tenders`).',
+      },
+      {
+        location: { type: 'METHOD', method: 'POST', path: '/cart' },
+        description:
+          "Add one or more menu items to the customer's cart. Request body: " +
+          'locationId (opaque location id e.g. `loc-amazing-burgers-r5KVG7N1` from ' +
+          'GetNearestLocations or GetCart) and items, an array where each entry has ' +
+          'itemId (the exact id from GetMenu, e.g. `chicken-tenders`) and quantity ' +
+          '(e.g. 2). The customerId is supplied automatically by the system. Look ' +
+          'up the menu first so the itemIds and locationId are correct.',
+      },
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/cart' },
+        description:
+          "Get the current cart: its items, the cart's locationId, item count and " +
+          'subtotal. The customerId is supplied automatically by the system. Reuse ' +
+          'the returned locationId for follow-up GetMenu, AddToCart or PlaceOrder ' +
+          'calls so they all target the same restaurant.',
+      },
+      {
+        location: { type: 'METHOD', method: 'PUT', path: '/cart' },
+        description:
+          'Modify the existing cart. Request body: action is one of clear (empty ' +
+          'the cart), remove_item (needs itemId), update_quantity (needs itemId and ' +
+          'quantity; quantity 0 removes the item), or change_location (needs ' +
+          'newLocationId, an opaque location id like `loc-amazing-burgers-r5KVG7N1`). ' +
+          'The customerId is supplied automatically by the system.',
+      },
+      {
+        location: { type: 'METHOD', method: 'POST', path: '/order' },
+        description:
+          'Place the order for the items currently in the cart. Call this only ' +
+          'after you have confirmed the items and the total with the customer. ' +
+          'Request body: locationId (the opaque location id from the cart, e.g. ' +
+          '`loc-amazing-burgers-r5KVG7N1`). The customerId and channel are supplied ' +
+          'automatically by the system; never ask the customer for them.',
+      },
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/locations/nearest' },
+        description:
+          'Find restaurant locations nearest to a latitude/longitude. Returns each ' +
+          "location's opaque locationId (e.g. `loc-amazing-burgers-r5KVG7N1`), name " +
+          'and address. Use this to obtain a locationId before calling GetMenu or ' +
+          'AddToCart. Query parameters: latitude and longitude in decimal degrees ' +
+          '(e.g. 32.7767 and -96.7970) and optional maxResults (e.g. 5). If you ' +
+          'only have an address, call GeocodeAddress first to get coordinates.',
+      },
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/locations/route' },
+        description:
+          'Find restaurant locations along a driving route, useful for pickup on ' +
+          'the way somewhere. Query parameters: startLatitude, startLongitude, ' +
+          'endLatitude, endLongitude in decimal degrees (e.g. 32.7767 / -96.7970) ' +
+          'and optional maxDetourMinutes (e.g. 10). Returns locationIds you can pass ' +
+          'to GetMenu or AddToCart.',
+      },
+      {
+        location: { type: 'METHOD', method: 'GET', path: '/locations/geocode' },
+        description:
+          'Convert a street address or place name into latitude/longitude ' +
+          'coordinates so you can then call GetNearestLocations or ' +
+          'FindLocationAlongRoute. Query parameter address is free text, e.g. ' +
+          '"123 Main Street, Dallas TX".',
+      },
+      // ---- Query-parameter descriptions ----
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/customers/profile', name: 'customerId' }, description: CUSTOMER_ID_DESC },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/customers/orders', name: 'customerId' }, description: CUSTOMER_ID_DESC },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/cart', name: 'customerId' }, description: CUSTOMER_ID_DESC },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/menu', name: 'locationId' }, description: LOCATION_ID_DESC },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/nearest', name: 'latitude' }, description: 'Latitude in decimal degrees, e.g. 32.7767.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/nearest', name: 'longitude' }, description: 'Longitude in decimal degrees, e.g. -96.7970.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/nearest', name: 'maxResults' }, description: 'Optional. Maximum number of locations to return, e.g. 5.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/route', name: 'startLatitude' }, description: 'Route start latitude in decimal degrees, e.g. 32.7767.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/route', name: 'startLongitude' }, description: 'Route start longitude in decimal degrees, e.g. -96.7970.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/route', name: 'endLatitude' }, description: 'Route end latitude in decimal degrees, e.g. 32.7820.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/route', name: 'endLongitude' }, description: 'Route end longitude in decimal degrees, e.g. -96.7700.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/route', name: 'maxDetourMinutes' }, description: 'Optional. Maximum acceptable detour from the route in minutes, e.g. 10.' },
+      { location: { type: 'QUERY_PARAMETER', method: 'GET', path: '/locations/geocode', name: 'address' }, description: 'Street address or place to geocode, free text, e.g. "123 Main Street, Dallas TX".' },
+    ];
+
+    // Content hash -> documentation version id. Changes only when the text above
+    // changes, so no-op deploys do not churn the version (and the version
+    // resource's logical id folds in the hash for clean create-before-delete).
+    const docVersionId =
+      'docs-' +
+      createHash('sha256').update(JSON.stringify(docSpecs)).digest('hex').slice(0, 12);
+
+    // Ten CfnParameters - one per ordering Lambda ARN.
     const mkArnParam = (name: string, desc: string) =>
       new cdk.CfnParameter(this, name, {
         type: 'String',
@@ -125,6 +278,7 @@ export class ApiGatewayStack extends cdk.Stack {
         'REST API for QSR ordering system (AgentCore Gateway + telephony agent are the only callers; AWS_IAM authz)',
       deployOptions: {
         stageName: 'prod',
+        documentationVersion: docVersionId,
         throttlingRateLimit: 100,
         throttlingBurstLimit: 200,
         accessLogDestination: new apigateway.LogGroupLogDestination(
@@ -229,7 +383,10 @@ export class ApiGatewayStack extends cdk.Stack {
       },
     });
 
-    // Request body models.
+    // Request body models. (LOCATION_ID_DESC / ITEM_ID_DESC are defined near the
+    // top of the constructor and reused here so body-model property descriptions
+    // match the query-parameter documentation parts.)
+
     const addToCartRequestModel = this.api.addModel('AddToCartRequest', {
       contentType: 'application/json',
       modelName: 'AddToCartRequest',
@@ -238,15 +395,18 @@ export class ApiGatewayStack extends cdk.Stack {
         title: 'Add To Cart Request',
         type: apigateway.JsonSchemaType.OBJECT,
         properties: {
-          customerId: { type: apigateway.JsonSchemaType.STRING },
-          locationId: { type: apigateway.JsonSchemaType.STRING },
+          customerId: { type: apigateway.JsonSchemaType.STRING, description: CUSTOMER_ID_DESC },
+          locationId: { type: apigateway.JsonSchemaType.STRING, description: LOCATION_ID_DESC },
           items: {
             type: apigateway.JsonSchemaType.ARRAY,
             items: {
               type: apigateway.JsonSchemaType.OBJECT,
               properties: {
-                itemId: { type: apigateway.JsonSchemaType.STRING },
-                quantity: { type: apigateway.JsonSchemaType.INTEGER },
+                itemId: { type: apigateway.JsonSchemaType.STRING, description: ITEM_ID_DESC },
+                quantity: {
+                  type: apigateway.JsonSchemaType.INTEGER,
+                  description: 'Number of this item to add, e.g. 2.',
+                },
               },
               required: ['itemId', 'quantity'],
             },
@@ -264,13 +424,57 @@ export class ApiGatewayStack extends cdk.Stack {
         title: 'Place Order Request',
         type: apigateway.JsonSchemaType.OBJECT,
         properties: {
-          customerId: { type: apigateway.JsonSchemaType.STRING },
-          locationId: { type: apigateway.JsonSchemaType.STRING },
-          channel: { type: apigateway.JsonSchemaType.STRING },
-          anonymousCaller: { type: apigateway.JsonSchemaType.BOOLEAN },
-          fromPhoneNumber: { type: apigateway.JsonSchemaType.STRING },
+          customerId: { type: apigateway.JsonSchemaType.STRING, description: CUSTOMER_ID_DESC },
+          locationId: { type: apigateway.JsonSchemaType.STRING, description: LOCATION_ID_DESC },
+          channel: {
+            type: apigateway.JsonSchemaType.STRING,
+            description:
+              'Order channel, supplied automatically by the system (e.g. whatsapp). Do not set this yourself.',
+          },
+          anonymousCaller: {
+            type: apigateway.JsonSchemaType.BOOLEAN,
+            description: 'Internal flag, supplied automatically by the system.',
+          },
+          fromPhoneNumber: {
+            type: apigateway.JsonSchemaType.STRING,
+            description: 'Internal field, supplied automatically by the system when applicable.',
+          },
         },
         required: ['customerId', 'locationId'],
+      },
+    });
+
+    const updateCartRequestModel = this.api.addModel('UpdateCartRequest', {
+      contentType: 'application/json',
+      modelName: 'UpdateCartRequest',
+      schema: {
+        schema: apigateway.JsonSchemaVersion.DRAFT4,
+        title: 'Update Cart Request',
+        type: apigateway.JsonSchemaType.OBJECT,
+        properties: {
+          customerId: { type: apigateway.JsonSchemaType.STRING, description: CUSTOMER_ID_DESC },
+          action: {
+            type: apigateway.JsonSchemaType.STRING,
+            enum: ['clear', 'remove_item', 'update_quantity', 'change_location'],
+            description:
+              'The cart operation. "clear" empties the cart. "remove_item" removes one item (requires itemId). "update_quantity" sets an item quantity (requires itemId and quantity; a quantity of 0 removes the item). "change_location" switches the pickup location (requires newLocationId).',
+          },
+          itemId: {
+            type: apigateway.JsonSchemaType.STRING,
+            description:
+              'Item id to remove or update (for remove_item and update_quantity). ' +
+              ITEM_ID_DESC,
+          },
+          quantity: {
+            type: apigateway.JsonSchemaType.INTEGER,
+            description: 'New quantity for update_quantity (0 removes the item).',
+          },
+          newLocationId: {
+            type: apigateway.JsonSchemaType.STRING,
+            description: 'New pickup location id (for change_location). ' + LOCATION_ID_DESC,
+          },
+        },
+        required: ['customerId', 'action'],
       },
     });
 
@@ -405,6 +609,8 @@ export class ApiGatewayStack extends cdk.Stack {
     cart.addMethod('PUT', integ(updateCart), {
       authorizationType: apigateway.AuthorizationType.IAM,
       operationName: 'UpdateCart',
+      requestValidator,
+      requestModels: { 'application/json': updateCartRequestModel },
       methodResponses: [
         {
           statusCode: '200',
@@ -509,6 +715,47 @@ export class ApiGatewayStack extends cdk.Stack {
         'method.request.querystring.address': true,
       },
     });
+
+    // ───────────── API documentation parts + version (Option B) ─────────────
+    //
+    // Materialize every entry in `docSpecs` as a CfnDocumentationPart, then
+    // snapshot them all into one CfnDocumentationVersion that the prod stage
+    // references (via deployOptions.documentationVersion = docVersionId set
+    // above). Dependency chain: each part -> version -> deployment stage, so
+    // CloudFormation creates the parts first, snapshots a complete set, then
+    // points the stage at it. The version's logical id folds in the content
+    // hash so a text change creates a NEW version (create-before-delete) and
+    // the stage is repointed before the old version is removed.
+    const docParts = docSpecs.map((spec, i) => {
+      const loc = spec.location;
+      const idHint = `${loc.type}-${(loc.method ?? 'X')}-${(loc.path ?? '/').replace(/[^a-zA-Z0-9]/g, '')}-${loc.name ?? 'op'}`;
+      const part = new apigateway.CfnDocumentationPart(this, `DocPart${i}-${idHint}`, {
+        restApiId: this.api.restApiId,
+        location: loc,
+        properties: JSON.stringify({ description: spec.description }),
+      });
+      // The /menu locationId query-parameter doc part was first deployed under
+      // the logical id `GetMenuLocationIdDocPart`. Keep that logical id so the
+      // stack UPDATES it in place rather than create-new + delete-old, which
+      // would 409 (a documentation part is unique per location).
+      if (loc.type === 'QUERY_PARAMETER' && loc.path === '/menu' && loc.name === 'locationId') {
+        part.overrideLogicalId('GetMenuLocationIdDocPart');
+      }
+      return part;
+    });
+
+    const docVersion = new apigateway.CfnDocumentationVersion(
+      this,
+      `DocVersion-${docVersionId}`,
+      {
+        restApiId: this.api.restApiId,
+        documentationVersion: docVersionId,
+        description: 'QSR ordering tool/parameter documentation snapshot',
+      },
+    );
+    // parts -> version (complete snapshot), version -> stage (reference exists).
+    for (const p of docParts) docVersion.node.addDependency(p);
+    this.api.deploymentStage.node.addDependency(docVersion);
 
     // ───────────── CfnOutputs (NO exportName per P5) ─────────────
     new cdk.CfnOutput(this, 'ApiGatewayUrl', {
