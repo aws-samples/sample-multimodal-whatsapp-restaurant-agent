@@ -1,0 +1,7 @@
+# Reproducibility lock for the WhatsApp Chat Runtime image (NFR3 / P8).
+#
+# PLACEHOLDER: intentionally empty of pinned packages. On the first CodeBuild
+# run the buildspec detects no pinned payload here and writes the `pip freeze`
+# output so the operator can commit the generated lock. Subsequent builds diff
+# against the committed lock and fail on drift. TODO(Task 7.2): commit the
+# generated lock once the real agent dependencies are finalized.

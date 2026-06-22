@@ -1,0 +1,21 @@
+{
+  "name": "whatsapp-setup-cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive Meta/WhatsApp onboarding CLI - validates the token, auto-discovers WABA/phone IDs, populates Secrets Manager, and wires the webhook (Phase B). Operator tooling for the WhatsApp Restaurant AI Host sample.",
+  "bin": {
+    "whatsapp-setup": "./whatsapp-setup.mjs"
+  },
+  "scripts": {
+    "start": "node whatsapp-setup.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3",
+    "@inquirer/prompts": "^7"
+  }
+}

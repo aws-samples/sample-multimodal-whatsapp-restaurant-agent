@@ -1,0 +1,40 @@
+# WhatsApp Call Runtime — runtime dependencies.
+#
+# Unlike the telephony reference (where FreeSWITCH owned the codec path), the
+# WhatsApp Call Runtime runs WebRTC INSIDE the container, so aiortc + av are
+# required here. The runtime must be deployed in VPC network mode for WebRTC:
+# https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc.html
+#
+# CodeBuild regenerates `requirements.lock` on REGENERATE_LOCK=1 to pin the full
+# transitive tree per NFR3 / P8.
+
+fastapi==0.123.9
+uvicorn[standard]>=0.31.1
+boto3>=1.35.0
+
+# WebRTC stack — aiortc builds the single-shot SDP answer and carries the media
+# (relayed via KVS managed TURN); av (PyAV) is its codec dependency and also the
+# transcode path for Nova 2 Sonic in Tasks 18/19. Native deps build in the
+# ARM64 CodeBuild image, not on a dev Mac — the unit tests mock them out.
+aiortc>=1.9.0
+av>=12.0.0
+# numpy backs av.AudioFrame.to_ndarray() in the inbound resampler (transcode.py);
+# without it the inbound media pump dies with "No module named 'numpy'" and no
+# caller audio reaches Nova Sonic (the bidi stream then times out, error 532).
+numpy>=1.26
+
+# Strands Agents — bidirectional streaming variant (BidiAgent + Nova Sonic).
+strands-agents[bidi]==1.37.0
+
+# MCP client for dynamic tool discovery from AgentCore Gateway with
+# AWS IAM (SigV4) authentication.
+mcp>=1.23.0
+pydantic>=2.4
+mcp-proxy-for-aws @ git+https://github.com/aws/mcp-proxy-for-aws.git@v1.1.5
+
+# Test deps — kept alongside runtime deps so a single `pip install -r`
+# populates both dev and prod needs.  Overhead is acceptable vs splitting.
+pytest>=8
+pytest-asyncio>=0.24
+hypothesis>=6.100
+httpx>=0.27

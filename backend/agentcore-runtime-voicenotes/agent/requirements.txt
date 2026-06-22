@@ -1,0 +1,34 @@
+# WhatsApp VoiceNotes Runtime - container dependencies (scaffold for Task 12.1;
+# refined in Tasks 12.2-12.4).
+#
+# Bounded speech-to-speech ordering agent: a short Amazon Nova 2 Sonic
+# bidirectional session per voice note (Ogg Opus in, Ogg Opus out). Unlike the
+# Chat Runtime (Converse / Nova Pro), this runtime uses the Nova Sonic
+# BIDIRECTIONAL stream, so the `[bidi]` extra is pulled in (Task 12.3), and PyAV
+# provides the Ogg Opus <-> PCM transcode (Task 12.2).
+#
+# CodeBuild regenerates `requirements.lock` to pin the full transitive tree
+# (reproducibility gate, NFR3 / P8).
+
+fastapi==0.123.9
+uvicorn[standard]>=0.31.1
+boto3>=1.35.0
+
+# Strands Agents with the bidirectional (Nova Sonic) extra - Task 12.3.
+strands-agents[bidi]==1.37.0
+
+# Ogg Opus decode/encode (16 kHz PCM in, 24 kHz PCM out) - Task 12.2.
+av>=12.0.0
+
+# MCP client for dynamic tool discovery from the AgentCore Gateway with
+# AWS IAM (SigV4) authentication.
+mcp>=1.23.0
+pydantic>=2.4
+mcp-proxy-for-aws @ git+https://github.com/aws/mcp-proxy-for-aws.git@v1.1.5
+
+# Test deps - kept alongside runtime deps so a single `pip install -r`
+# populates both dev and prod needs.
+pytest>=8
+pytest-asyncio>=0.24
+hypothesis>=6.100
+httpx>=0.27
