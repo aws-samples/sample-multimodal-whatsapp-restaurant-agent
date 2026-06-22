@@ -163,7 +163,7 @@
     <h3>A.1 &nbsp;Create the app and get a sandbox test number</h3>
     <div class="panel">
       <ol class="steps">
-        <li><span class="st">Create a Meta Developer App (type: Business)</span><span class="sb">At <a href="https://developers.facebook.com/">developers.facebook.com</a> &rarr; My Apps &rarr; Create App &rarr; choose the <b>Business</b> type. If you have no Business Portfolio yet, Meta auto-creates a default one and links the app to it &mdash; you do <b>not</b> need to create or verify a business to test.</span></li>
+        <li><span class="st">Create a Meta Developer App (type: Business)</span><span class="sb">At <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/">developers.facebook.com</a> &rarr; My Apps &rarr; Create App &rarr; choose the <b>Business</b> type. If you have no Business Portfolio yet, Meta auto-creates a default one and links the app to it &mdash; you do <b>not</b> need to create or verify a business to test.</span></li>
         <li><span class="st">Add the WhatsApp product to the app</span><span class="sb">In the app dashboard, click <b>Add Product</b> and add <b>WhatsApp</b>. This automatically provisions a <b>WhatsApp Business Account (WABA)</b> and a free <b>test number</b> you can use immediately &mdash; no business verification, no number registration.</span></li>
         <li><span class="st">Add your phone as a test recipient</span><span class="sb">In WhatsApp &rarr; API Setup, under <b>To</b>, add and verify your own WhatsApp number as an allowed recipient. In test mode the sandbox number can message up to 5 verified recipients &mdash; enough to exercise text, voice notes, and calls end to end.</span></li>
       </ol>
@@ -309,7 +309,7 @@ cat cdk-outputs/wa-webhook.json   <span class="cm"># -&gt; WebhookUrl: https://a
     <p class="lead">None of this is needed to test. Do it only when you are taking the sample to a real restaurant on a real number and messaging real customers.</p>
     <div class="panel">
       <ol class="steps">
-        <li><span class="st">Create / confirm a Business Portfolio</span><span class="sb">At <a href="https://business.facebook.com/">business.facebook.com</a>, set up the Business Portfolio that owns the app, WABA, and number (the test path used an auto-created one).</span></li>
+        <li><span class="st">Create / confirm a Business Portfolio</span><span class="sb">At <a target="_blank" rel="noopener noreferrer" href="https://business.facebook.com/">business.facebook.com</a>, set up the Business Portfolio that owns the app, WABA, and number (the test path used an auto-created one).</span></li>
         <li><span class="st">Complete business verification</span><span class="sb">In Business Settings &rarr; Security Center, finish verification. Required to message customers beyond your test recipients and to raise messaging limits. It can take days &mdash; start early.</span></li>
         <li><span class="st">Register a real production phone number + display name</span><span class="sb">In WhatsApp &rarr; API Setup / Phone Numbers, add the real number (must receive the verification code and <b>not</b> already be on the consumer WhatsApp / WhatsApp Business app). Complete code verification and set the business <b>display name</b> (subject to Meta name-review). Re-collect the new <b>Phone Number ID</b> and re-run the config/deploy with it.</span></li>
         <li><span class="st">Submit for App Review and switch to Live</span><span class="sb">Complete <b>App Review</b> for <code>whatsapp_business_messaging</code> + <code>whatsapp_business_management</code>, then switch the app from Development to <b>Live</b> mode so it can message the general public.</span></li>
@@ -325,23 +325,23 @@ cat cdk-outputs/wa-webhook.json   <span class="cm"># -&gt; WebhookUrl: https://a
     <div class="panel">
       <h3 style="margin-top:0">Meta WhatsApp</h3>
       <div class="reflist">
-        <a href="https://business.facebook.com/">Meta Business Suite (Business Portfolio + verification)</a>
-        <a href="https://developers.facebook.com/">Meta for Developers (apps, tokens)</a>
-        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks/">Set up webhooks</a>
-        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/">Messages webhook reference</a>
-        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/calling">Calling API</a>
-        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/calling/user-initiated-calls">User-initiated calls</a>
-        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/">Calling (business-messaging docs)</a>
-        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/call-settings/">Call settings</a>
-        <a href="https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media/">Media API reference</a>
-        <a href="https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages/">Send messages</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://business.facebook.com/">Meta Business Suite (Business Portfolio + verification)</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/">Meta for Developers (apps, tokens)</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks/">Set up webhooks</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/messages/">Messages webhook reference</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/docs/whatsapp/cloud-api/calling">Calling API</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/docs/whatsapp/cloud-api/calling/user-initiated-calls">User-initiated calls</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/">Calling (business-messaging docs)</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/call-settings/">Call settings</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media/">Media API reference</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/send-messages/">Send messages</a>
       </div>
       <h3>AWS</h3>
       <div class="reflist">
-        <a href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc.html">AgentCore Runtime WebRTC support</a>
-        <a href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc-get-started-kvs.html">Get started with WebRTC using KVS</a>
-        <a href="https://aws.amazon.com/blogs/machine-learning/amazon-bedrock-agentcore-memory-building-context-aware-agents/">AgentCore Memory overview</a>
-        <a href="https://docs.aws.amazon.com/kinesisvideostreams-webrtc-dg/latest/devguide/what-is-kvswebrtc.html">What is KVS WebRTC</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc.html">AgentCore Runtime WebRTC support</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-webrtc-get-started-kvs.html">Get started with WebRTC using KVS</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://aws.amazon.com/blogs/machine-learning/amazon-bedrock-agentcore-memory-building-context-aware-agents/">AgentCore Memory overview</a>
+        <a target="_blank" rel="noopener noreferrer" href="https://docs.aws.amazon.com/kinesisvideostreams-webrtc-dg/latest/devguide/what-is-kvswebrtc.html">What is KVS WebRTC</a>
       </div>
     </div>
   </section>
