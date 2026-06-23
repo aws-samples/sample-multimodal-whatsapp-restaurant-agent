@@ -83,6 +83,7 @@ ASSUME_YES=false       # --yes / --non-interactive: never block on a prompt
 # so the sample is testable out of the box; pass --skip-kitchen-simulator to omit
 # it (e.g. a real deployment whose POS will advance order status for real).
 SKIP_KITCHEN_SIM=false
+INTERACTIVE_WEB_UI=false  # --interactive-web-ui: launch the local browser installer
 OUTPUTS_DIR="cdk-outputs"
 
 # Parse arguments
@@ -97,6 +98,7 @@ while [[ $# -gt 0 ]]; do
     --low-storage-mode) LOW_STORAGE_MODE=true; shift ;;
     --skip-kitchen-simulator) SKIP_KITCHEN_SIM=true; shift ;;
     --yes|--non-interactive) ASSUME_YES=true; shift ;;
+    --interactive-web-ui) INTERACTIVE_WEB_UI=true; shift ;;
     --help)
       cat <<'USAGE'
 Usage: ./scripts/deploy-all.sh [OPTIONS]
@@ -144,6 +146,11 @@ Options:
                               Example: --only wa-memory
   --yes, --non-interactive    Never block on an interactive prompt. Use in CI
                               or any piped/non-TTY run.
+  --interactive-web-ui        Launch a local, browser-based installer (loopback
+                              only) that visualizes the deploy, explains each
+                              component, and guides the Meta/WhatsApp setup.
+                              Requires Node.js. For an offline UI demo (no AWS):
+                              node scripts/web-ui-deployment/server.mjs --mock
   --help                      Show this help.
 
 Prerequisites:
@@ -161,6 +168,18 @@ USAGE
       exit 1 ;;
   esac
 done
+
+# Web UI installer: when requested, hand off to the local browser installer and
+# stop here. The server re-invokes THIS script per layer (--only <key>, without
+# this flag), so there is no recursion. Inert otherwise - normal terminal deploy
+# continues below.
+if [ "$INTERACTIVE_WEB_UI" = true ]; then
+  if ! command -v node >/dev/null 2>&1; then
+    echo "ERROR: --interactive-web-ui requires Node.js, which was not found on PATH." >&2
+    exit 1
+  fi
+  exec node "$SCRIPT_DIR/web-ui-deployment/server.mjs"
+fi
 
 print_section() {
   echo ""

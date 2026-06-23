@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>WhatsApp Restaurant AI Host - Installer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1><span class="dot"></span> WhatsApp Restaurant AI Host - Installer</h1>
+    <div class="ctrls">
+      <span id="mockBadge" class="badge" hidden>mock mode</span>
+      <button id="startBtn" class="primary">Start deployment</button>
+      <button id="exitBtn">Exit</button>
+    </div>
+  </header>
+
+  <section id="progressWrap">
+    <div class="progress-line"><div class="progress-inner" id="progressInner"></div></div>
+    <div class="progress-label" id="progressLabel">Ready.</div>
+  </section>
+
+  <main>
+    <section id="vizPane">
+      <div id="diagramWrap">
+        <svg id="archSvg" viewBox="0 0 1560 940" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Architecture diagram - the box for the component currently deploying is highlighted"></svg>
+        <div id="diagramFallback" class="diagram-fallback" hidden>Architecture diagram unavailable - showing component list only.</div>
+      </div>
+      <section id="layersPane">
+        <h2>Components</h2>
+        <div id="layers" class="layers"></div>
+      </section>
+    </section>
+    <section id="sidePane">
+      <h2>Details</h2>
+      <div id="detail" class="detail">Select a component to see what it is and why it deploys.</div>
+      <h2>Log</h2>
+      <div id="log" class="log" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>
