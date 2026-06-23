@@ -1,0 +1,10 @@
+{
+  "name": "wa-web-ui-deployment",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local web UI installer for the WhatsApp Restaurant AI Host. Phase 1: shared layer manifest + progress-marker parser.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

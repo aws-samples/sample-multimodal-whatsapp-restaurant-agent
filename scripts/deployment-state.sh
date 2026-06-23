@@ -32,6 +32,14 @@ STATE_FILE=".deployment-state.json"
 # The workspace root is the parent dir of scripts/ - walk one level up.
 STATE_FILE_ABS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/$STATE_FILE"
 
+# Emit a machine-readable progress marker for the web UI installer.
+# Inert unless WAUI=1 (set by scripts/web-ui-deployment when it drives the
+# deploy), so a plain terminal run is completely unchanged. Args: type key state.
+waui_marker() {
+  [ -n "${WAUI:-}" ] || return 0
+  printf '@@WAUI@@ {"type":"%s","key":"%s","state":"%s"}\n' "${1:-layer}" "${2:-}" "${3:-}"
+}
+
 # Initialize state file if it doesn't exist
 init_state() {
   if [ ! -f "$STATE_FILE_ABS" ]; then
@@ -114,6 +122,10 @@ if ('$extra_data') {
 }
 fs.writeFileSync('$STATE_FILE_ABS', JSON.stringify(state, null, 2));
 "
+  # Web UI installer: a layer marked deployed=true is a completed layer.
+  if [ "$deployed" = "true" ]; then
+    waui_marker layer "$component" done
+  fi
 }
 
 # Check if component is deployed
@@ -165,6 +177,7 @@ stack_exists() {
 }
 
 # Export functions
+export -f waui_marker
 export -f init_state
 export -f update_state
 export -f is_deployed

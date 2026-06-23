@@ -1,0 +1,77 @@
+{
+  "comment": "Single source of truth for the web UI installer. One entry per deploy-all.sh layer key, in deploy order. 'nodes' maps to node ids in the architecture visualizer (index.html); an empty list means no dedicated node yet (rendered generically). 'why' is the plain-language explanation shown in the UI. Keep this in sync with deploy-all.sh component keys (a test enforces it).",
+  "layers": [
+    {
+      "key": "wa-network",
+      "name": "Shared VPC",
+      "nodes": [],
+      "why": "A private Virtual Private Cloud (VPC) with a NAT gateway. Only the voice-call runtime needs it, for outbound media to the Amazon Kinesis Video Streams (KVS) managed TURN relay."
+    },
+    {
+      "key": "wa-ddb",
+      "name": "DynamoDB tables",
+      "nodes": ["ddbTables"],
+      "why": "Amazon DynamoDB tables for customers, orders, menu, carts, and locations - the data the ordering tools read and write."
+    },
+    {
+      "key": "wa-location",
+      "name": "Location Service",
+      "nodes": ["location"],
+      "why": "Amazon Location Service for geocoding an address and finding the nearest restaurant."
+    },
+    {
+      "key": "wa-lambdas",
+      "name": "Ordering Lambdas",
+      "nodes": ["orderLambdas"],
+      "why": "AWS Lambda functions holding the ordering business logic (GetMenu, AddToCart, PlaceOrder, and the rest)."
+    },
+    {
+      "key": "wa-apigw",
+      "name": "Backend REST API",
+      "nodes": ["restApi"],
+      "why": "An Amazon API Gateway REST API (AWS Identity and Access Management authorized) that fronts the ordering Lambdas."
+    },
+    {
+      "key": "wa-gateway",
+      "name": "AgentCore Gateway (MCP tools)",
+      "nodes": ["gateway"],
+      "why": "Amazon Bedrock AgentCore Gateway exposes the backend API as discoverable Model Context Protocol (MCP) tools the agents call by name."
+    },
+    {
+      "key": "wa-memory",
+      "name": "Shared AgentCore Memory",
+      "nodes": ["sharedMemory"],
+      "why": "One Amazon Bedrock AgentCore Memory resource keyed by a pseudonymous customer id, shared by all three runtimes so a customer is recognized across channels."
+    },
+    {
+      "key": "wa-runtime-call",
+      "name": "Voice-call runtime (WebRTC)",
+      "nodes": ["callRuntime", "kvsTurn"],
+      "why": "The Web Real-Time Communication (WebRTC) voice agent on AgentCore Runtime (Amazon Nova 2 Sonic), with media relayed through the KVS managed TURN relay."
+    },
+    {
+      "key": "wa-runtime-voicenotes",
+      "name": "Voice-note runtime",
+      "nodes": ["voiceNotesRuntime"],
+      "why": "A bounded Amazon Nova 2 Sonic speech-to-speech runtime that turns an inbound voice note into a spoken reply (OGG Opus in, OGG Opus out)."
+    },
+    {
+      "key": "wa-runtime-chat",
+      "name": "Chat runtime (multimodal text)",
+      "nodes": ["chatRuntime"],
+      "why": "The multimodal text runtime: Amazon Nova 2 Lite via the Bedrock Converse API, handling text, images, and documents."
+    },
+    {
+      "key": "wa-webhook",
+      "name": "WhatsApp webhook + delivery",
+      "nodes": ["webhookGw", "webhookLambda", "inboundQueue", "worker", "senderLambda", "winTable", "secrets"],
+      "why": "The only public endpoint: an Amazon API Gateway webhook, an ingest Lambda that verifies and enqueues to Amazon SQS, a worker Lambda, a Sender Lambda for replies, the last-inbound window table, and the Secrets Manager containers for the Meta tokens."
+    },
+    {
+      "key": "wa-order-notifier",
+      "name": "Order-status notifier",
+      "nodes": [],
+      "why": "Sends proactive order-status updates to the customer on WhatsApp as the order advances, with an optional demo kitchen simulator."
+    }
+  ]
+}

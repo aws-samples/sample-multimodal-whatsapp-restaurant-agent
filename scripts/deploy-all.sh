@@ -59,6 +59,12 @@ WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=deployment-state.sh
 source "$SCRIPT_DIR/deployment-state.sh"
 
+# Web UI installer: track the layer in flight so an error can be attributed to
+# it, and emit a 'fail' marker on any error exit. Inert unless WAUI=1 (the
+# marker helper no-ops), so terminal runs are unaffected.
+CURRENT_LAYER=""
+trap 'waui_marker layer "${CURRENT_LAYER:-unknown}" fail' ERR
+
 # Defaults
 PROJECT_PREFIX="qsr-wa"
 PROJECT_PREFIX_EXPLICIT=false  # set true when --deploymentPrefix is passed
@@ -363,12 +369,15 @@ fi
 should_deploy() {
   local component="$1"
   if [ -n "$ONLY_COMPONENT" ]; then
-    [ "$ONLY_COMPONENT" = "$component" ]
-    return
+    if [ "$ONLY_COMPONENT" = "$component" ]; then
+      CURRENT_LAYER="$component"; waui_marker layer "$component" start; return 0
+    fi
+    return 1
   fi
   if [ "$FORCE_DEPLOY" = true ] || [ "$(is_deployed "$component")" != "true" ]; then
-    return 0
+    CURRENT_LAYER="$component"; waui_marker layer "$component" start; return 0
   fi
+  waui_marker layer "$component" skipped
   return 1
 }
 
