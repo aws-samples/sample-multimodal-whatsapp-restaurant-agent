@@ -15,8 +15,9 @@
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, basename } from 'node:path';
 import { extractTopology, EMPTY_TOPOLOGY } from './lib/topology-source.mjs';
@@ -25,6 +26,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));     // scripts/web-ui-depl
 const SCRIPTS_DIR = join(HERE, '..');                     // scripts/
 const REPO_ROOT = join(SCRIPTS_DIR, '..');                // repo root
 const DEPLOY_SCRIPT = join(SCRIPTS_DIR, 'deploy-all.sh');
+const WHATSAPP_SETUP_DIR = join(SCRIPTS_DIR, 'whatsapp-setup');
 const PUBLIC_DIR = join(HERE, 'public');
 const LAYERS_PATH = join(HERE, 'layers.json');
 const INDEX_HTML = join(REPO_ROOT, 'index.html');         // the published architecture diagram
@@ -51,8 +53,37 @@ let deploying = false;
 // whatsapp-setup secrets lib.
 let metaMod = null;
 async function loadMeta() {
+  ensureSetupDeps();
   if (!metaMod) metaMod = await import('./lib/meta.mjs');
   return metaMod;
+}
+
+// The Meta onboarding libs (scripts/whatsapp-setup/lib) statically import the
+// AWS SDK, whose packages live in scripts/whatsapp-setup/node_modules. Those
+// are NOT installed by deploying or launching the web UI, so the gate's first
+// import would otherwise throw a cryptic "Cannot find package '@aws-sdk/...'".
+// Auto-install once, with a clear log line, so operators don't have to know to
+// run `npm install` in a sibling directory. Built-ins only (keeps the server
+// zero-dependency); only runs when a Meta gate is actually invoked.
+let setupDepsReady = false;
+function ensureSetupDeps() {
+  if (setupDepsReady) return;
+  if (MOCK) { setupDepsReady = true; return; }  // mock never touches the real AWS SDK
+  const probe = join(WHATSAPP_SETUP_DIR, 'node_modules', '@aws-sdk', 'client-secrets-manager', 'package.json');
+  if (existsSync(probe)) { setupDepsReady = true; return; }
+  sse('log', { line: `[setup] Installing Meta onboarding dependencies (one-time) in scripts/whatsapp-setup ...` });
+  const r = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--loglevel=error'], {
+    cwd: WHATSAPP_SETUP_DIR, encoding: 'utf8',
+  });
+  if (r.error || r.status !== 0) {
+    const detail = (r.stderr || (r.error && r.error.message) || '').toString().trim().split('\n').slice(-1)[0] || 'unknown error';
+    throw new Error(
+      `Could not install Meta onboarding dependencies automatically (${detail}). ` +
+      `Run this once, then retry: cd scripts/whatsapp-setup && npm install`
+    );
+  }
+  setupDepsReady = true;
+  sse('log', { line: `[setup] Meta onboarding dependencies installed.` });
 }
 
 let syntheticMod = null;
