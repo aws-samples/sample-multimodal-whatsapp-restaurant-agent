@@ -6,6 +6,10 @@
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 }
 * { box-sizing: border-box; }
+/* The `hidden` attribute must always win over component display rules
+   (e.g. .gate-overlay/.diagram-fallback use display:flex, which would
+   otherwise override the UA [hidden]{display:none} and keep them visible). */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg-0); color: var(--txt); font-family: var(--sans); }
 body { display: flex; flex-direction: column; min-height: 100vh; }
 
@@ -115,3 +119,54 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 .topo-node[data-state="failed"] .topo-rect { stroke: var(--fail); stroke-width: 2; filter: drop-shadow(0 0 10px rgba(244,63,94,.55)); }
 .topo-node[data-state="failed"] .topo-title { fill: var(--fail); }
 @keyframes topoPulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+
+/* ===================================================================
+   Phase 4 - Meta onboarding gate (modal form)
+   =================================================================== */
+.gate-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(3, 6, 12, .72); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.gate-card {
+  width: 100%; max-width: 640px; max-height: 90vh; overflow-y: auto;
+  background: linear-gradient(180deg, rgba(16,24,40,.98), rgba(10,15,26,.98));
+  border: 1px solid var(--glass-brd); border-radius: 14px; padding: 22px 24px;
+  box-shadow: 0 24px 80px rgba(0,0,0,.6);
+}
+.gate-title { font-size: 17px; font-weight: 700; color: #fff; margin: 0 0 8px; }
+.gate-help { font-size: 13px; line-height: 1.55; color: var(--txt); margin: 0 0 14px; }
+.gate-error {
+  font: 12px var(--mono); color: var(--fail);
+  border: 1px solid var(--fail); border-radius: 8px; padding: 8px 10px; margin-bottom: 14px;
+  background: rgba(244,63,94,.08);
+}
+.gate-console { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.link-btn {
+  background: rgba(90,164,255,.12); border: 1px solid var(--accent); color: #cfe4ff;
+  border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+}
+.link-btn:hover { background: rgba(90,164,255,.25); color: #fff; }
+
+.gate-form { display: flex; flex-direction: column; gap: 14px; }
+.gate-field { display: flex; flex-direction: column; gap: 5px; }
+.gate-field label { font-size: 12px; font-weight: 600; color: var(--txt); }
+.gate-input-row { display: flex; gap: 8px; align-items: center; }
+.gate-field input, .gate-field select {
+  flex: 1; background: #03060c; color: var(--txt);
+  border: 1px solid var(--glass-brd); border-radius: 8px; padding: 9px 11px;
+  font: 13px var(--mono);
+}
+.gate-field input:focus, .gate-field select:focus { outline: none; border-color: var(--accent); }
+.where-btn {
+  flex: 0 0 auto; background: var(--glass); border: 1px solid var(--glass-brd);
+  color: var(--txt-dim); border-radius: 8px; padding: 8px 10px; font-size: 11px; cursor: pointer;
+}
+.where-btn:hover { border-color: var(--accent); color: #fff; }
+.gate-fieldhelp { font-size: 11.5px; line-height: 1.45; color: var(--txt-dim); }
+
+.gate-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+/* Phase 5 - checkbox field in the gate form */
+.gate-check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--txt); cursor: pointer; }
+.gate-check input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }

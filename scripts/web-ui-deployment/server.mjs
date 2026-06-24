@@ -46,6 +46,35 @@ const STATIC_FILES = new Set(['index.html', 'app.mjs', 'viz.mjs', 'topology.mjs'
 const sseClients = new Set();
 let deploying = false;
 
+// Meta onboarding is loaded lazily (only when a gate runs) so the deploy and
+// --mock paths stay dependency-free; meta.mjs pulls in the AWS SDK via the
+// whatsapp-setup secrets lib.
+let metaMod = null;
+async function loadMeta() {
+  if (!metaMod) metaMod = await import('./lib/meta.mjs');
+  return metaMod;
+}
+
+let syntheticMod = null;
+async function loadSynthetic() {
+  if (!syntheticMod) syntheticMod = await import('./lib/synthetic.mjs');
+  return syntheticMod;
+}
+
+// A "gate" pauses the deploy and waits for the browser to POST a command
+// (submitMeta / skipMeta / a discovery choice). One gate is open at a time.
+let pendingGate = null;
+function awaitGate() {
+  return new Promise((resolve) => { pendingGate = { resolve }; });
+}
+function resolveGate(payload) {
+  if (!pendingGate) return false;
+  const { resolve } = pendingGate;
+  pendingGate = null;
+  resolve(payload);
+  return true;
+}
+
 function isLoopback(req) {
   const a = req.socket.remoteAddress || '';
   return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
@@ -136,6 +165,136 @@ function mockLayerProc(key) {
   });
 }
 
+// ---- Meta/WhatsApp onboarding gates -------------------------------------
+// A gate emits a `gate` SSE event and awaits the browser's reply. Secrets in
+// the reply are passed to meta.mjs and NEVER logged or echoed.
+
+function metaLog(line) { sse('log', { key: 'meta', line }); }
+
+// Pre-deploy: collect Meta values, validate, discover ids, populate secrets.
+// Loops on a discovery choice or a recoverable error until success or skip.
+async function runMetaPre() {
+  const m = await loadMeta();
+  let extra = {};
+  for (;;) {
+    sse('gate', { ...m.preGate(), ...extra });
+    const reply = await awaitGate();
+    if (!reply || (reply.cmd && reply.cmd.startsWith('skip'))) { metaLog('Skipped WhatsApp onboarding.'); return { skipped: true }; }
+    const values = reply.values || {};
+    if (MOCK) {
+      metaLog('[mock] validated token, discovered WABA + phone number, populated 3 secrets.');
+      return { ok: true, mock: true, config: { appId: values.appId || 'mock', wabaId: values.wabaId || 'mock', phoneNumberId: values.phoneNumberId || 'mock', prefix: values.deploymentPrefix || 'qsr-wa' } };
+    }
+    let res;
+    try {
+      res = await m.runPreDeploy(values, { region: process.env.AWS_REGION, repoRoot: REPO_ROOT, onLog: metaLog });
+    } catch (err) {
+      res = { ok: false, reason: err.message };
+    }
+    if (res.ok) {
+      metaLog(`WhatsApp pre-deploy complete${res.verifyTokenGenerated ? ' (Verify Token auto-generated)' : ''}.`);
+      sse('secretStatus', { populated: true });
+      return res;
+    }
+    extra = res.needChoice ? { choice: res.needChoice } : { error: res.reason || res.stage || 'unknown error' };
+    metaLog(res.needChoice ? `Multiple ${res.needChoice.kind}s found - choose one.` : `WhatsApp setup needs attention: ${extra.error}.`);
+  }
+}
+
+// Post-deploy: wire the webhook in Meta using the values already captured.
+async function runMetaPost(config) {
+  const m = await loadMeta();
+  sse('gate', m.postGate());
+  const reply = await awaitGate();
+  if (!reply || (reply.cmd && reply.cmd.startsWith('skip'))) { metaLog('Skipped webhook wiring.'); return { skipped: true }; }
+  if (MOCK) {
+    metaLog('[mock] wired webhook subscription + subscribed WABA + enabled Calling API.');
+    return { ok: true, mock: true };
+  }
+  let res;
+  try {
+    res = await m.runPostDeploy({ ...(config || {}), ...(reply.values || {}) }, { region: process.env.AWS_REGION, repoRoot: REPO_ROOT, onLog: metaLog });
+  } catch (err) {
+    res = { ok: false, reason: err.message };
+  }
+  if (!res.ok && res.reason) metaLog(`Webhook wiring incomplete: ${res.reason}.`);
+  return res;
+}
+
+// Run both Meta gates back to back (used after a deploy and as the standalone
+// "configure / update WhatsApp" rotation entry).
+async function runMetaGates() {
+  const pre = await runMetaPre();
+  if (pre.skipped) return;
+  await runMetaPost(pre.config);
+}
+
+// Standalone rotation/reconfigure entry: re-open the Meta gates without
+// redeploying. PutSecretValue overwrites in place, so this rotates tokens.
+async function runMetaOnly() {
+  if (deploying) return;
+  deploying = true;
+  try {
+    await runMetaGates();
+    sse('done', { ok: true, summary: 'WhatsApp configuration updated.' });
+  } catch (err) {
+    sse('log', { key: 'meta', line: `WhatsApp configuration error: ${err.message}` });
+    sse('done', { ok: false, summary: 'WhatsApp configuration stopped on an error.' });
+  } finally {
+    deploying = false;
+  }
+}
+
+// ---- Synthetic data seeding gate ----------------------------------------
+function dataLog(line) { sse('log', { key: 'data', line }); }
+
+// Present the seeding form; on submit, validate and spawn the generator.
+// Loops on a validation/seed error until success or skip. The phone number is
+// redacted from streamed output inside runSynthetic (never logged here either).
+async function runSyntheticGate() {
+  const s = await loadSynthetic();
+  let extra = {};
+  for (;;) {
+    sse('gate', { ...s.syntheticGate(), ...extra });
+    const reply = await awaitGate();
+    if (!reply || (reply.cmd && reply.cmd.startsWith('skip'))) { dataLog('Skipped synthetic data seeding.'); return { skipped: true }; }
+    const values = reply.values || {};
+    if (MOCK) {
+      dataLog('[mock] seeded locations + menu' + (values.anonymous ? ' (anonymous demo).' : ' + a loyalty customer.'));
+      return { ok: true, mock: true };
+    }
+    const check = s.validateSyntheticInput(values);
+    if (!check.ok) { extra = { error: check.errors.join(' ') }; continue; }
+    const code = await s.runSynthetic(values, { repoRoot: REPO_ROOT, onLog: dataLog });
+    if (code === 0) { dataLog('Synthetic data seeding complete.'); return { ok: true }; }
+    extra = { error: `Seeding exited with code ${code}. Check the log above and retry, or skip.` };
+  }
+}
+
+// Standalone re-seed entry (reconfigure path foundation).
+async function runSyntheticOnly() {
+  if (deploying) return;
+  deploying = true;
+  try {
+    await runSyntheticGate();
+    sse('done', { ok: true, summary: 'Synthetic data step finished.' });
+  } catch (err) {
+    sse('log', { key: 'data', line: `Synthetic data error: ${err.message}` });
+    sse('done', { ok: false, summary: 'Synthetic data step stopped on an error.' });
+  } finally {
+    deploying = false;
+  }
+}
+
+// Open a Meta console page (resolved from known ids; never an arbitrary URL).
+async function openMetaUrl(cmd) {
+  try {
+    const m = await loadMeta();
+    const url = await m.resolveConsoleUrl(cmd.which || 'apps', { appId: cmd.appId, businessId: cmd.businessId });
+    openBrowser(url);
+  } catch { /* best-effort */ }
+}
+
 async function runDeploy() {
   if (deploying) return;
   deploying = true;
@@ -150,6 +309,10 @@ async function runDeploy() {
       if (code !== 0) { ok = false; break; }
       done += 1;
       sse('progress', { done, total: layers.length, activeKey: null });
+    }
+    if (ok) {
+      await runMetaGates();
+      await runSyntheticGate();
     }
   } catch (err) {
     ok = false;
@@ -220,6 +383,10 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true }));
       if (cmd.cmd === 'start') runDeploy();
       else if (cmd.cmd === 'exit') shutdown();
+      else if (cmd.cmd === 'metaOnly') runMetaOnly();
+      else if (cmd.cmd === 'syntheticOnly') runSyntheticOnly();
+      else if (cmd.cmd === 'submitMeta' || cmd.cmd === 'submitData' || (cmd.cmd && cmd.cmd.startsWith('skip'))) resolveGate(cmd);
+      else if (cmd.cmd === 'openUrl') openMetaUrl(cmd);
     });
     return;
   }

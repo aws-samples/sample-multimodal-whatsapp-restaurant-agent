@@ -11,6 +11,8 @@
     <h1><span class="dot"></span> WhatsApp Restaurant AI Host - Installer</h1>
     <div class="ctrls">
       <span id="mockBadge" class="badge" hidden>mock mode</span>
+      <button id="metaBtn">Configure WhatsApp</button>
+      <button id="dataBtn">Seed data</button>
       <button id="startBtn" class="primary">Start deployment</button>
       <button id="exitBtn">Exit</button>
     </div>
@@ -39,6 +41,20 @@
       <div id="log" class="log" aria-live="polite"></div>
     </section>
   </main>
+
+  <div id="gate" class="gate-overlay" hidden>
+    <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+      <h2 id="gateTitle" class="gate-title">WhatsApp setup</h2>
+      <p id="gateHelp" class="gate-help"></p>
+      <div id="gateError" class="gate-error" hidden></div>
+      <div id="gateConsole" class="gate-console"></div>
+      <form id="gateForm" class="gate-form" autocomplete="off"></form>
+      <div class="gate-actions">
+        <button type="button" id="gateSkip">Skip for now</button>
+        <button type="button" id="gateSubmit" class="primary">Continue</button>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="app.mjs"></script>
 </body>
