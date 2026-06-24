@@ -33,6 +33,8 @@ function connect() {
     const { layers, mock, states, progress, classification, availableModes } = data;
     if (mock) q('#mockBadge').hidden = false;
     if (data.identity) renderIdentity(data.identity);
+    latestLayers = layers || [];
+    setStep(data.identity && !data.identity.ok ? 'credentials' : 'deploy');
     renderLayers(layers, (layer) => { selectedLayerKey = layer.key; q('#applyLayerBtn').hidden = false; showDetail(layer); });
     initTopology(document.getElementById('archSvg')).then((ok) => {
       if (!ok) {
@@ -69,11 +71,16 @@ function connect() {
       if (vs && meta.nodes && meta.nodes.length) setTopoNodes(meta.nodes, vs);
       if (state === 'start') showDetail(meta);
     }
+    if (state === 'start') setStep('deploy');
+    if (state === 'fail') showFailBanner(key);
   });
 
   es.addEventListener('build', (e) => {
     const { key, phase } = JSON.parse(e.data);
-    logLine(`[build] ${key}: ${phase}`, 'muted');
+    const meta = getLayerMeta(key);
+    const name = (meta && meta.name) || key;
+    if (phase === 'building') q('#progressLabel').textContent = `Building ${name} container (this can take a few minutes)...`;
+    logLine(`[build] ${name}: ${phase}`, 'muted');
   });
 
   es.addEventListener('log', (e) => {
@@ -89,6 +96,7 @@ function connect() {
   es.addEventListener('done', (e) => {
     const { ok, summary } = JSON.parse(e.data);
     hideGate();
+    if (ok) { setStep('done'); hideFailBanner(); }
     setFinal(ok, summary);
     logLine(summary, ok ? 'muted' : 'err');
     q('#startBtn').disabled = false;
@@ -96,7 +104,9 @@ function connect() {
   });
 
   es.addEventListener('gate', (e) => {
-    renderGate(JSON.parse(e.data));
+    const g = JSON.parse(e.data);
+    setStep(g.kind === 'synthetic-data' ? 'data' : 'whatsapp');
+    renderGate(g);
   });
 
   es.addEventListener('secretStatus', () => {
@@ -111,6 +121,8 @@ function connect() {
 q('#startBtn').addEventListener('click', () => {
   q('#startBtn').disabled = true;
   q('#startBtn').textContent = 'Deploying...';
+  hideFailBanner();
+  setStep('deploy');
   command({ cmd: 'start' });
 });
 q('#exitBtn').addEventListener('click', () => command({ cmd: 'exit' }));
@@ -124,6 +136,70 @@ const CONSOLE_LABELS = {
 
 let currentGate = null;
 let selectedLayerKey = null;
+let latestLayers = [];
+
+// ---- Guided step rail ----
+const STEP_ORDER = ['credentials', 'deploy', 'whatsapp', 'data', 'done'];
+function setStep(name) {
+  const idx = STEP_ORDER.indexOf(name);
+  if (idx < 0) return;
+  for (const li of document.querySelectorAll('#stepRail li')) {
+    const i = STEP_ORDER.indexOf(li.dataset.step);
+    li.classList.toggle('active', i === idx);
+    li.classList.toggle('step-done', i < idx);
+  }
+}
+
+// ---- Failure banner (root cause hint + exact re-run command) ----
+function showFailBanner(key) {
+  const meta = getLayerMeta(key);
+  const name = (meta && meta.name) || key;
+  selectedLayerKey = key;
+  q('#applyLayerBtn').hidden = false;
+  const b = q('#failBanner');
+  b.innerHTML = '';
+  const h = document.createElement('div');
+  h.className = 'fb-title';
+  h.textContent = `${name} failed`;
+  const p = document.createElement('div');
+  p.textContent = 'The cause is in the log below. Fix it, then click "Re-apply this layer", or re-run in a terminal:';
+  const cmd = document.createElement('code');
+  cmd.className = 'fb-cmd';
+  cmd.textContent = `./scripts/deploy-all.sh --only ${key}`;
+  b.append(h, p, cmd);
+  b.hidden = false;
+}
+function hideFailBanner() { q('#failBanner').hidden = true; }
+
+// ---- Deploy options (layer subset + skip kitchen simulator) ----
+function openOptions() {
+  const wrap = q('#optLayers');
+  wrap.innerHTML = '';
+  for (const l of latestLayers) {
+    const lab = document.createElement('label');
+    lab.className = 'opt-layer';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = l.key;
+    cb.checked = true;
+    lab.append(cb, document.createTextNode(' ' + l.name));
+    wrap.appendChild(lab);
+  }
+  q('#options').hidden = false;
+}
+function startWithOptions() {
+  const selectedLayers = [...document.querySelectorAll('#optLayers input:checked')].map((c) => c.value);
+  const options = { skipKitchenSimulator: q('#optSkipKitchen').checked };
+  q('#options').hidden = true;
+  hideFailBanner();
+  setStep('deploy');
+  q('#startBtn').disabled = true;
+  q('#startBtn').textContent = 'Deploying...';
+  command({ cmd: 'start', selectedLayers, options });
+}
+q('#optionsBtn').addEventListener('click', openOptions);
+q('#optionsCancel').addEventListener('click', () => { q('#options').hidden = true; });
+q('#optionsStart').addEventListener('click', startWithOptions);
 
 const MODE_LABELS = {
   fresh: 'Fresh install',

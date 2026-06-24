@@ -208,3 +208,28 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   border-radius: 6px; padding: 2px 8px; font: 10px var(--mono); cursor: pointer; text-transform: uppercase;
 }
 .id-recheck:hover { border-color: var(--accent); color: #fff; }
+
+/* Guided step rail */
+.step-rail {
+  list-style: none; display: flex; gap: 6px; margin: 0 0 10px; padding: 0; flex-wrap: wrap;
+}
+.step-rail li {
+  font: 10px var(--mono); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--txt-dim); padding: 4px 10px; border-radius: 20px;
+  border: 1px solid var(--glass-brd); background: var(--glass);
+}
+.step-rail li.step-done { color: var(--ok); border-color: rgba(52,211,153,.4); }
+.step-rail li.active { color: #fff; border-color: var(--accent); background: rgba(90,164,255,.18); box-shadow: 0 0 12px rgba(90,164,255,.3); }
+
+/* Failure banner */
+.fail-banner {
+  border: 1px solid var(--fail); background: rgba(244,63,94,.08); border-radius: 10px;
+  padding: 12px; margin-bottom: 14px; font-size: 12.5px; line-height: 1.5; color: var(--txt);
+}
+.fail-banner .fb-title { font-weight: 700; color: var(--fail); margin-bottom: 6px; }
+.fail-banner .fb-cmd { display: block; margin-top: 8px; padding: 7px 9px; background: #03060c; border-radius: 6px; color: #aee0ff; font: 11.5px var(--mono); word-break: break-all; }
+
+/* Deploy options modal */
+.opt-layers { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin: 14px 0; max-height: 40vh; overflow-y: auto; }
+.opt-layer { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--txt); cursor: pointer; }
+.opt-layer input { width: 15px; height: 15px; accent-color: var(--accent); }

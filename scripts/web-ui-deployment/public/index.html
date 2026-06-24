@@ -18,12 +18,20 @@
       <span id="mockBadge" class="badge" hidden>mock mode</span>
       <button id="metaBtn">Configure WhatsApp</button>
       <button id="dataBtn">Seed data</button>
+      <button id="optionsBtn">Options</button>
       <button id="startBtn" class="primary">Start deployment</button>
       <button id="exitBtn">Exit</button>
     </div>
   </header>
 
   <section id="progressWrap">
+    <ol id="stepRail" class="step-rail" aria-label="Installer steps">
+      <li data-step="credentials">Credentials</li>
+      <li data-step="deploy">Deploy</li>
+      <li data-step="whatsapp">WhatsApp</li>
+      <li data-step="data">Demo data</li>
+      <li data-step="done">Done</li>
+    </ol>
     <div class="progress-line"><div class="progress-inner" id="progressInner"></div></div>
     <div class="progress-label" id="progressLabel">Ready.</div>
   </section>
@@ -42,6 +50,7 @@
     <section id="sidePane">
       <h2>Details</h2>
       <div id="detail" class="detail">Select a component to see what it is and why it deploys.</div>
+      <div id="failBanner" class="fail-banner" hidden></div>
       <button id="applyLayerBtn" class="apply-layer-btn" hidden>Re-apply this layer</button>
       <h2>Log</h2>
       <div id="log" class="log" aria-live="polite"></div>
@@ -67,6 +76,19 @@
       <h2 id="modesTitle" class="gate-title">Existing deployment detected</h2>
       <p id="modesHelp" class="gate-help"></p>
       <div id="modesList" class="modes-list"></div>
+    </div>
+  </div>
+
+  <div id="options" class="gate-overlay" hidden>
+    <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="optionsTitle">
+      <h2 id="optionsTitle" class="gate-title">Deploy options</h2>
+      <p class="gate-help">Choose which layers to deploy and any options. By default every layer deploys in order; deselect layers to deploy a subset (dependencies are your responsibility).</p>
+      <label class="gate-check"><input type="checkbox" id="optSkipKitchen" /> Skip the demo kitchen simulator (the real order-status notifier still deploys)</label>
+      <div id="optLayers" class="opt-layers"></div>
+      <div class="gate-actions">
+        <button type="button" id="optionsCancel">Cancel</button>
+        <button type="button" id="optionsStart" class="primary">Deploy selected</button>
+      </div>
     </div>
   </div>
 

@@ -180,6 +180,16 @@ cd sample-restaurant-whatsapp-ai-host-using-amazon-bedrock-agentcore-nova-sonic
 ./scripts/deploy-all.sh --deploymentPrefix qsr-wa
 ```
 
+### Guided web installer (optional)
+
+Prefer a visual, guided experience? Launch the local browser-based installer instead of the plain terminal run:
+
+```bash
+./scripts/deploy-all.sh --interactive-web-ui
+```
+
+It opens a loopback page that animates the architecture as each layer deploys, walks you through the Meta/WhatsApp onboarding with inline guidance, seeds the demo data, shows your AWS credential status, and lets you resume or re-deploy an existing install. See [`scripts/web-ui-deployment/README.md`](scripts/web-ui-deployment/README.md) for details (including an offline `--mock` demo).
+
 **Optional parameters:**
 
 - `--deploymentPrefix <name>` — Prefix applied to every physical resource name. Must match `^[a-z][a-z0-9-]{1,19}$` (1-20 lowercase characters, starting with a letter). Default: `qsr-wa`.

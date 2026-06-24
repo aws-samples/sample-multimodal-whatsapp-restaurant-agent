@@ -173,10 +173,12 @@ async function loadTopology() {
   return topologyCache;
 }
 
-function spawnLayerProc(key, { force = false } = {}) {
+function spawnLayerProc(key, { force = false, skipKitchenSimulator = false } = {}) {
   return new Promise((resolve) => {
     const args = [DEPLOY_SCRIPT, '--only', key, '--yes', '--skip-preflight'];
     if (force) args.push('--force-deploy');
+    if (skipKitchenSimulator) args.push('--skip-kitchen-simulator');
+    let buildAnnounced = false;
     const child = spawn('bash', args, {
       cwd: REPO_ROOT,
       env: { ...process.env, WAUI: '1' },
@@ -192,6 +194,12 @@ function spawnLayerProc(key, { force = false } = {}) {
             onDeployEvent({ kind: 'marker', event: e });
             continue;
           } catch { /* fall through to log */ }
+        }
+        // Surface a long-running container build so the UI does not look hung
+        // during multi-minute CodeBuild runs (emit once per layer).
+        if (!buildAnnounced && /CodeBuild|Building image|docker build|Submitting .*build|image build|Phase: (SUBMITTED|QUEUED|PROVISIONING|DOWNLOAD_SOURCE|INSTALL|PRE_BUILD|BUILD)/i.test(line)) {
+          buildAnnounced = true;
+          onDeployEvent({ kind: 'marker', event: { type: 'build', key, phase: 'building' } });
         }
         onDeployEvent({ kind: 'log', key, line });
       }
@@ -452,19 +460,24 @@ async function openMetaUrl(cmd) {
   } catch { /* best-effort */ }
 }
 
-async function runDeploy() {
+async function runDeploy(opts = {}) {
   if (deploying) return;
   if (!(await ensureCredentials())) return;
   deploying = true;
   flowAborted = false;
   let ok = true;
   try {
-    const layers = await loadLayers();
+    let layers = await loadLayers();
+    if (Array.isArray(opts.selectedLayers) && opts.selectedLayers.length) {
+      const sel = new Set(opts.selectedLayers);
+      layers = layers.filter((l) => sel.has(l.key));
+    }
+    const skipKitchenSimulator = Boolean(opts.options && opts.options.skipKitchenSimulator);
     sse('progress', { done: 0, total: layers.length, activeKey: null });
     let done = 0;
     for (const layer of layers) {
       sse('progress', { done, total: layers.length, activeKey: layer.key });
-      const code = MOCK ? await mockLayerProc(layer.key) : await spawnLayerProc(layer.key);
+      const code = MOCK ? await mockLayerProc(layer.key) : await spawnLayerProc(layer.key, { skipKitchenSimulator });
       if (code !== 0) { ok = false; break; }
       done += 1;
       sse('progress', { done, total: layers.length, activeKey: null });
@@ -578,7 +591,7 @@ const server = http.createServer(async (req, res) => {
       try { cmd = JSON.parse(raw || '{}'); } catch { /* ignore */ }
       res.writeHead(200, { 'content-type': CONTENT_TYPES['.json'] });
       res.end(JSON.stringify({ ok: true }));
-      if (cmd.cmd === 'start') runDeploy();
+      if (cmd.cmd === 'start') runDeploy({ selectedLayers: cmd.selectedLayers, options: cmd.options });
       else if (cmd.cmd === 'exit') shutdown();
       else if (cmd.cmd === 'mode') handleMode(cmd);
       else if (cmd.cmd === 'applyLayer' && cmd.key) runApplyLayer(cmd.key, Boolean(cmd.force));
