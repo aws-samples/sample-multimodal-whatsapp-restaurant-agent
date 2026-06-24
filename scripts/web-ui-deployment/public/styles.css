@@ -59,6 +59,22 @@ button:hover { border-color: var(--accent); color: var(--txt-strong); }
 button.primary { background: var(--accent); color: #051021; border-color: var(--accent); font-weight: 600; }
 button:disabled { opacity: .4; cursor: not-allowed; }
 
+/* Reusable busy banner: shown while an action waits on the backend (loading
+   the WhatsApp form, seeding data, re-checking credentials, etc.). Sticky so it
+   stays visible if the page is scrolled; themes via the shared variables. */
+.busy-banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 20px; font: 12px var(--mono); color: var(--txt);
+  background: rgba(90,164,255,.12); border-bottom: 1px solid var(--glass-brd);
+  position: sticky; top: 0; z-index: 30;
+}
+.busy-spinner {
+  flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid rgba(120,180,255,.25); border-top-color: var(--accent);
+  animation: spin .7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
 #progressWrap { padding: 14px 20px 4px; }
 .progress-line { height: 8px; background: rgba(90,164,255,.12); border-radius: 5px; overflow: hidden; }
 .progress-inner { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #76b3ff); transition: width .4s ease; }

@@ -17,6 +17,36 @@ function logLine(line, cls) {
   log.scrollTop = log.scrollHeight;
 }
 
+// ---- Reusable busy banner ------------------------------------------------
+// Shown on actions that wait on the backend (loading a gate form, seeding,
+// re-checking credentials, re-applying a layer). Hidden by the concluding SSE
+// event (gate/done/identity/layer). An idle failsafe clears it if no event
+// arrives; each streamed log line re-arms it so a long seed keeps it visible.
+const BUSY_IDLE_MS = 45000;
+let busyTimer = null;
+let busyKind = null;
+function armBusyTimer() {
+  clearTimeout(busyTimer);
+  busyTimer = setTimeout(hideBusy, BUSY_IDLE_MS);
+}
+function showBusy(text, kind) {
+  const b = q('#busyBanner');
+  b.querySelector('.busy-text').textContent = text || 'Working...';
+  b.hidden = false;
+  busyKind = kind || null;
+  armBusyTimer();
+}
+function hideBusy() {
+  clearTimeout(busyTimer);
+  busyTimer = null;
+  busyKind = null;
+  const b = q('#busyBanner');
+  if (b) b.hidden = true;
+}
+function bumpBusy() {
+  if (!q('#busyBanner').hidden) armBusyTimer();
+}
+
 async function command(cmd) {
   await fetch(`/command?token=${encodeURIComponent(TOKEN)}`, {
     method: 'POST',
@@ -62,6 +92,7 @@ function connect() {
 
   es.addEventListener('layer', (e) => {
     const { key, state } = JSON.parse(e.data);
+    hideBusy();
     const vs = VIZ_STATE[state];
     if (vs) setLayerState(key, vs);
     const meta = getLayerMeta(key);
@@ -85,6 +116,7 @@ function connect() {
 
   es.addEventListener('log', (e) => {
     const { line } = JSON.parse(e.data);
+    bumpBusy();
     logLine(line);
   });
 
@@ -95,6 +127,7 @@ function connect() {
 
   es.addEventListener('done', (e) => {
     const { ok, summary } = JSON.parse(e.data);
+    hideBusy();
     hideGate();
     if (ok) { setStep('done'); hideFailBanner(); }
     setFinal(ok, summary);
@@ -105,6 +138,7 @@ function connect() {
 
   es.addEventListener('gate', (e) => {
     const g = JSON.parse(e.data);
+    hideBusy();
     setStep(g.kind === 'synthetic-data' ? 'data' : 'whatsapp');
     renderGate(g);
   });
@@ -113,9 +147,9 @@ function connect() {
     logLine('Secrets populated in AWS Secrets Manager (values never shown).', 'muted');
   });
 
-  es.addEventListener('identity', (e) => renderIdentity(JSON.parse(e.data)));
+  es.addEventListener('identity', (e) => { if (busyKind === 'recheck') hideBusy(); renderIdentity(JSON.parse(e.data)); });
 
-  es.onerror = () => logLine('connection lost (the installer may have exited)', 'muted');
+  es.onerror = () => { hideBusy(); logLine('connection lost (the installer may have exited)', 'muted'); };
 }
 
 q('#startBtn').addEventListener('click', () => {
@@ -123,6 +157,7 @@ q('#startBtn').addEventListener('click', () => {
   q('#startBtn').textContent = 'Deploying...';
   hideFailBanner();
   setStep('deploy');
+  showBusy('Starting deployment...', 'deploy');
   command({ cmd: 'start' });
 });
 q('#exitBtn').addEventListener('click', () => command({ cmd: 'exit' }));
@@ -195,6 +230,7 @@ function startWithOptions() {
   setStep('deploy');
   q('#startBtn').disabled = true;
   q('#startBtn').textContent = 'Deploying...';
+  showBusy('Starting deployment...', 'deploy');
   command({ cmd: 'start', selectedLayers, options });
 }
 q('#optionsBtn').addEventListener('click', openOptions);
@@ -226,7 +262,7 @@ function renderModeChooser(data) {
     desc.className = 'mode-desc';
     desc.textContent = (data.modeDescriptions && data.modeDescriptions[mode]) || '';
     b.append(title, desc);
-    b.addEventListener('click', () => { command({ cmd: 'mode', path: mode }); q('#modes').hidden = true; });
+    b.addEventListener('click', () => { showBusy('Loading...', 'mode'); command({ cmd: 'mode', path: mode }); q('#modes').hidden = true; });
     list.appendChild(b);
   }
   q('#modes').hidden = false;
@@ -368,7 +404,9 @@ function submitGate() {
     if (el.type === 'checkbox') values[el.name] = el.checked;
     else if (el.value.trim() !== '') values[el.name] = el.value.trim();
   }
-  const cmd = currentGate && currentGate.kind === 'synthetic-data' ? 'submitData' : 'submitMeta';
+  const isData = currentGate && currentGate.kind === 'synthetic-data';
+  const cmd = isData ? 'submitData' : 'submitMeta';
+  showBusy(isData ? 'Seeding demo data...' : 'Saving WhatsApp settings...', isData ? 'synthetic' : 'meta');
   command({ cmd, values });
   // Clear secret + sensitive (PII) inputs from the DOM immediately after submit.
   for (const el of document.querySelectorAll('#gateForm [data-secret], #gateForm [data-sensitive]')) el.value = '';
@@ -378,10 +416,10 @@ function submitGate() {
 function hideGate() { q('#gate').hidden = true; currentGate = null; }
 
 q('#gateSubmit').addEventListener('click', submitGate);
-q('#gateSkip').addEventListener('click', () => { command({ cmd: 'skip' }); hideGate(); });
-q('#metaBtn').addEventListener('click', () => command({ cmd: 'metaOnly' }));
-q('#dataBtn').addEventListener('click', () => command({ cmd: 'syntheticOnly' }));
-q('#recheckBtn').addEventListener('click', () => command({ cmd: 'recheckIdentity' }));
+q('#gateSkip').addEventListener('click', () => { showBusy('Finishing up...', 'skip'); command({ cmd: 'skip' }); hideGate(); });
+q('#metaBtn').addEventListener('click', () => { showBusy('Loading WhatsApp configuration...', 'meta'); command({ cmd: 'metaOnly' }); });
+q('#dataBtn').addEventListener('click', () => { showBusy('Preparing demo-data form...', 'synthetic'); command({ cmd: 'syntheticOnly' }); });
+q('#recheckBtn').addEventListener('click', () => { showBusy('Checking AWS credentials...', 'recheck'); command({ cmd: 'recheckIdentity' }); });
 
 // Render the AWS credential status chip (account, principal, valid/expired).
 function renderIdentity(id) {
@@ -402,7 +440,11 @@ function renderIdentity(id) {
   }
 }
 q('#applyLayerBtn').addEventListener('click', () => {
-  if (selectedLayerKey) command({ cmd: 'applyLayer', key: selectedLayerKey, force: true });
+  if (selectedLayerKey) {
+    const meta = getLayerMeta(selectedLayerKey);
+    showBusy(`Re-applying ${(meta && meta.name) || selectedLayerKey}...`, 'applyLayer');
+    command({ cmd: 'applyLayer', key: selectedLayerKey, force: true });
+  }
 });
 
 // ---- Light/dark theme toggle (persisted; defaults to OS preference) ----
