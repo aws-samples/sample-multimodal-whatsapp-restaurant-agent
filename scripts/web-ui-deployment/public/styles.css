@@ -4,6 +4,35 @@
   --accent: #5aa4ff; --ok: #34d399; --warn: #ff9f43; --fail: #f43f5e;
   --skip: #6b7a91; --mono: ui-monospace, Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* Themeable surfaces + emphasis (overridden by the light theme below).
+     --txt-strong is used for headings/names that were hardcoded #fff;
+     --surface-deep is the dark inset behind the log + inputs (#03060c);
+     --node-idle / --node-active-bg back the architecture-diagram rects. */
+  --txt-strong: #ffffff;
+  --surface-deep: #03060c;
+  --log-txt: #aee0ff;
+  --header-grad: linear-gradient(180deg, rgba(10,15,26,.9), rgba(10,15,26,.5));
+  --diagram-grad: radial-gradient(circle at 30% 15%, rgba(20,40,80,.45), var(--bg-1));
+  --gate-card-grad: linear-gradient(180deg, rgba(16,24,40,.98), rgba(10,15,26,.98));
+  --node-idle: rgba(20,30,50,.6);
+  --node-active-bg: rgba(90,164,255,.18);
+  --node-title: #ffffff;
+}
+
+/* Light theme: same accents (ok/warn/fail/accent), inverted surfaces. */
+:root[data-theme="light"] {
+  --bg-0: #eef2f8; --bg-1: #e3eaf4; --glass: rgba(255,255,255,.78);
+  --glass-brd: rgba(40,80,140,.22); --txt: #1d2a3d; --txt-dim: #5a6b85;
+  --accent: #2a6fdb; --skip: #94a3b8;
+  --txt-strong: #0a1628;
+  --surface-deep: #f2f6fc;
+  --log-txt: #1d3a5c;
+  --header-grad: linear-gradient(180deg, rgba(255,255,255,.96), rgba(232,240,250,.72));
+  --diagram-grad: radial-gradient(circle at 30% 15%, rgba(190,215,250,.55), var(--bg-1));
+  --gate-card-grad: linear-gradient(180deg, rgba(255,255,255,.99), rgba(238,244,251,.99));
+  --node-idle: rgba(255,255,255,.85);
+  --node-active-bg: rgba(42,111,219,.14);
+  --node-title: #0a1628;
 }
 * { box-sizing: border-box; }
 /* The `hidden` attribute must always win over component display rules
@@ -16,7 +45,7 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 20px; border-bottom: 1px solid var(--glass-brd);
-  background: linear-gradient(180deg, rgba(10,15,26,.9), rgba(10,15,26,.5));
+  background: var(--header-grad);
 }
 header h1 { font-size: 15px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 10px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: #25d366; box-shadow: 0 0 10px #25d366; }
@@ -26,7 +55,7 @@ button {
   background: var(--glass); color: var(--txt); border: 1px solid var(--glass-brd);
   border-radius: 8px; padding: 7px 14px; font: 13px var(--sans); cursor: pointer; transition: all .15s;
 }
-button:hover { border-color: var(--accent); color: #fff; }
+button:hover { border-color: var(--accent); color: var(--txt-strong); }
 button.primary { background: var(--accent); color: #051021; border-color: var(--accent); font-weight: 600; }
 button:disabled { opacity: .4; cursor: not-allowed; }
 
@@ -44,7 +73,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   background: var(--glass); cursor: pointer; transition: border-color .3s, box-shadow .3s, opacity .3s;
 }
 .layer:hover { border-color: var(--accent); }
-.layer .name { font-size: 13.5px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 8px; }
+.layer .name { font-size: 13.5px; font-weight: 600; color: var(--txt-strong); display: flex; align-items: center; gap: 8px; }
 .layer .state { font: 10px var(--mono); color: var(--txt-dim); margin-top: 4px; text-transform: uppercase; letter-spacing: .08em; }
 .layer .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--skip); flex: 0 0 auto; }
 
@@ -61,8 +90,8 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 
 #sidePane { display: flex; flex-direction: column; min-height: 0; }
 .detail { background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 12px; font-size: 13px; line-height: 1.5; margin-bottom: 14px; }
-.detail .dname { font-weight: 700; color: #fff; display: block; margin-bottom: 6px; }
-.log { flex: 1; min-height: 120px; overflow-y: auto; background: #03060c; border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; font: 11.5px var(--mono); color: #aee0ff; white-space: pre-wrap; word-break: break-word; }
+.detail .dname { font-weight: 700; color: var(--txt-strong); display: block; margin-bottom: 6px; }
+.log { flex: 1; min-height: 120px; overflow-y: auto; background: var(--surface-deep); border: 1px solid var(--glass-brd); border-radius: 10px; padding: 10px; font: 11.5px var(--mono); color: var(--log-txt); white-space: pre-wrap; word-break: break-word; }
 .log .err { color: var(--fail); }
 .log .muted { color: var(--txt-dim); }
 
@@ -80,7 +109,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 #vizPane { display: flex; flex-direction: column; gap: 14px; min-height: 0; min-width: 0; }
 #diagramWrap {
   flex: 1 1 auto; min-height: 280px; position: relative; overflow: hidden;
-  background: radial-gradient(circle at 30% 15%, rgba(20,40,80,.45), var(--bg-1));
+  background: var(--diagram-grad);
   border: 1px solid var(--glass-brd); border-radius: 12px;
 }
 #diagramWrap.no-diagram { flex: 0 0 auto; min-height: 0; border: none; background: none; }
@@ -97,7 +126,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 #vizPane .layer .name { font-size: 12px; }
 
 /* Clusters + edges (static context). */
-.topo-cluster-label { font: 600 11px var(--sans); letter-spacing: .04em; text-transform: uppercase; fill-opacity: .55; }
+.topo-cluster-label { font: 700 12px var(--sans); letter-spacing: .03em; text-transform: uppercase; fill-opacity: .6; }
 .topo-edge { stroke-width: 1.4; opacity: .14; }
 .topo-boundary-label { font: 700 12px var(--mono); }
 
@@ -106,7 +135,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   fill: var(--node-idle); stroke: rgba(120,180,255,.18); stroke-width: 1;
   transition: fill .35s, stroke .35s, opacity .35s, filter .35s;
 }
-.topo-node .topo-title { fill: #fff; font: 700 14px var(--sans); }
+.topo-node .topo-title { fill: var(--node-title); font: 700 14px var(--sans); }
 .topo-node .topo-sub { fill: var(--txt-dim); font: 600 10px var(--mono); }
 
 .topo-node[data-state="deploying"] .topo-rect {
@@ -130,11 +159,11 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 }
 .gate-card {
   width: 100%; max-width: 640px; max-height: 90vh; overflow-y: auto;
-  background: linear-gradient(180deg, rgba(16,24,40,.98), rgba(10,15,26,.98));
+  background: var(--gate-card-grad);
   border: 1px solid var(--glass-brd); border-radius: 14px; padding: 22px 24px;
   box-shadow: 0 24px 80px rgba(0,0,0,.6);
 }
-.gate-title { font-size: 17px; font-weight: 700; color: #fff; margin: 0 0 8px; }
+.gate-title { font-size: 17px; font-weight: 700; color: var(--txt-strong); margin: 0 0 8px; }
 .gate-help { font-size: 13px; line-height: 1.55; color: var(--txt); margin: 0 0 14px; }
 .gate-error {
   font: 12px var(--mono); color: var(--fail);
@@ -146,14 +175,14 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   background: rgba(90,164,255,.12); border: 1px solid var(--accent); color: #cfe4ff;
   border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer;
 }
-.link-btn:hover { background: rgba(90,164,255,.25); color: #fff; }
+.link-btn:hover { background: rgba(90,164,255,.25); color: var(--txt-strong); }
 
 .gate-form { display: flex; flex-direction: column; gap: 14px; }
 .gate-field { display: flex; flex-direction: column; gap: 5px; }
 .gate-field label { font-size: 12px; font-weight: 600; color: var(--txt); }
 .gate-input-row { display: flex; gap: 8px; align-items: center; }
 .gate-field input, .gate-field select {
-  flex: 1; background: #03060c; color: var(--txt);
+  flex: 1; background: var(--surface-deep); color: var(--txt);
   border: 1px solid var(--glass-brd); border-radius: 8px; padding: 9px 11px;
   font: 13px var(--mono);
 }
@@ -162,7 +191,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   flex: 0 0 auto; background: var(--glass); border: 1px solid var(--glass-brd);
   color: var(--txt-dim); border-radius: 8px; padding: 8px 10px; font-size: 11px; cursor: pointer;
 }
-.where-btn:hover { border-color: var(--accent); color: #fff; }
+.where-btn:hover { border-color: var(--accent); color: var(--txt-strong); }
 .gate-fieldhelp { font-size: 11.5px; line-height: 1.45; color: var(--txt-dim); }
 
 .gate-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
@@ -178,7 +207,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 10px; transition: border-color .15s, background .15s;
 }
 .mode-btn:hover { border-color: var(--accent); background: rgba(90,164,255,.1); }
-.mode-title { font-size: 14px; font-weight: 700; color: #fff; }
+.mode-title { font-size: 14px; font-weight: 700; color: var(--txt-strong); }
 .mode-desc { font-size: 12px; color: var(--txt-dim); margin-top: 3px; line-height: 1.45; }
 
 /* Phase 6 - re-apply a single layer (force-deploy / retry) */
@@ -190,7 +219,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   color: var(--txt-dim); border-radius: 8px; padding: 8px 10px; font: 11px var(--mono);
   cursor: pointer; min-width: 46px; text-transform: uppercase; letter-spacing: .06em;
 }
-.eye-btn:hover { border-color: var(--accent); color: #fff; }
+.eye-btn:hover { border-color: var(--accent); color: var(--txt-strong); }
 
 /* AWS credential status chip */
 .identity {
@@ -207,7 +236,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   background: transparent; border: 1px solid var(--glass-brd); color: inherit;
   border-radius: 6px; padding: 2px 8px; font: 10px var(--mono); cursor: pointer; text-transform: uppercase;
 }
-.id-recheck:hover { border-color: var(--accent); color: #fff; }
+.id-recheck:hover { border-color: var(--accent); color: var(--txt-strong); }
 
 /* Guided step rail */
 .step-rail {
@@ -227,9 +256,19 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
   padding: 12px; margin-bottom: 14px; font-size: 12.5px; line-height: 1.5; color: var(--txt);
 }
 .fail-banner .fb-title { font-weight: 700; color: var(--fail); margin-bottom: 6px; }
-.fail-banner .fb-cmd { display: block; margin-top: 8px; padding: 7px 9px; background: #03060c; border-radius: 6px; color: #aee0ff; font: 11.5px var(--mono); word-break: break-all; }
+.fail-banner .fb-cmd { display: block; margin-top: 8px; padding: 7px 9px; background: var(--surface-deep); border-radius: 6px; color: var(--log-txt); font: 11.5px var(--mono); word-break: break-all; }
 
 /* Deploy options modal */
 .opt-layers { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin: 14px 0; max-height: 40vh; overflow-y: auto; }
 .opt-layer { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--txt); cursor: pointer; }
 .opt-layer input { width: 15px; height: 15px; accent-color: var(--accent); }
+
+/* ===================================================================
+   Light-theme spot fixes for elements with blue-on-blue text that the
+   shared variables don't cover (gate-console link buttons).
+   =================================================================== */
+:root[data-theme="light"] .link-btn { color: #1c4fa0; }
+:root[data-theme="light"] .link-btn:hover { background: rgba(42,111,219,.18); color: #0a1628; }
+
+/* Theme toggle button in the header. */
+#themeBtn { min-width: 96px; }

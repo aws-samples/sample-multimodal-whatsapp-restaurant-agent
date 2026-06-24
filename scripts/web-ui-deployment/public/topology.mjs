@@ -38,6 +38,29 @@ function edgePath(nodes, from, to, curve) {
 
 function stripTags(s) { return String(s || '').replace(/<[^>]*>/g, ''); }
 
+// Cluster-label font size (px). Must match `.topo-cluster-label` in styles.css;
+// used here only to estimate how many characters fit per column for wrapping.
+const CLUSTER_FONT_PX = 12;
+
+// Greedy word-wrap for a cluster label so it stays inside its column instead of
+// overflowing the rectangle. Width-aware (uses the column width), so short
+// labels stay on one line and long ones (e.g. "Meta WhatsApp Business
+// Platform") break across lines. The label renders uppercase via CSS, so the
+// per-char estimate uses an uppercase-ish width factor.
+function wrapLabel(text, maxW) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  const charW = CLUSTER_FONT_PX * 0.66;
+  const maxChars = Math.max(6, Math.floor(maxW / charW));
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const cand = cur ? cur + ' ' + w : w;
+    if (cand.length > maxChars && cur) { lines.push(cur); cur = w; } else { cur = cand; }
+  }
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
+}
+
 // Fetch the diagram data and render it into `svg`. Returns true if a diagram
 // was rendered, false if topology data is unavailable (caller falls back to
 // the card-only view).
@@ -74,7 +97,13 @@ function render() {
       stroke: c.color, 'stroke-opacity': 0.3, 'stroke-dasharray': '4 6', 'stroke-width': 1,
     }));
     const label = elNS('text', { x: c.x + 14, y: c.y + 16, class: 'topo-cluster-label', fill: c.color });
-    label.textContent = c.label;
+    // Wrap long labels across lines so they stay within the cluster column.
+    const lines = wrapLabel(c.label, c.w - 28);
+    lines.forEach((ln, i) => {
+      const ts = elNS('tspan', { x: c.x + 14, dy: i === 0 ? 0 : '1.15em' });
+      ts.textContent = ln;
+      label.appendChild(ts);
+    });
     clustersG.appendChild(label);
   }
 

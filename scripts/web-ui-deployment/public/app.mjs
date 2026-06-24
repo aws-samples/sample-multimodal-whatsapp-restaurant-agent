@@ -405,6 +405,27 @@ q('#applyLayerBtn').addEventListener('click', () => {
   if (selectedLayerKey) command({ cmd: 'applyLayer', key: selectedLayerKey, force: true });
 });
 
+// ---- Light/dark theme toggle (persisted; defaults to OS preference) ----
+const THEME_KEY = 'waui-theme';
+function applyTheme(t) {
+  const light = t === 'light';
+  document.documentElement.dataset.theme = light ? 'light' : '';
+  const btn = q('#themeBtn');
+  if (btn) btn.textContent = light ? 'Dark mode' : 'Light mode';
+}
+function initTheme() {
+  let t = null;
+  try { t = localStorage.getItem(THEME_KEY); } catch { /* storage may be blocked */ }
+  if (!t) t = (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+  applyTheme(t);
+}
+q('#themeBtn').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
+  applyTheme(next);
+});
+initTheme();
+
 if (!TOKEN) {
   logLine('Missing session token. Relaunch with ./scripts/deploy-all.sh --interactive-web-ui', 'err');
 } else {
