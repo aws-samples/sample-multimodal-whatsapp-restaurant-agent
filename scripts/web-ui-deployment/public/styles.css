@@ -170,3 +170,41 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 /* Phase 5 - checkbox field in the gate form */
 .gate-check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--txt); cursor: pointer; }
 .gate-check input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+
+/* Phase 6 - launch-mode chooser */
+.modes-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.mode-btn {
+  text-align: left; width: 100%; padding: 12px 14px; cursor: pointer;
+  background: var(--glass); border: 1px solid var(--glass-brd); border-radius: 10px; transition: border-color .15s, background .15s;
+}
+.mode-btn:hover { border-color: var(--accent); background: rgba(90,164,255,.1); }
+.mode-title { font-size: 14px; font-weight: 700; color: #fff; }
+.mode-desc { font-size: 12px; color: var(--txt-dim); margin-top: 3px; line-height: 1.45; }
+
+/* Phase 6 - re-apply a single layer (force-deploy / retry) */
+.apply-layer-btn { width: 100%; margin: 0 0 14px; }
+
+/* Eye / reveal toggle on secret fields */
+.eye-btn {
+  flex: 0 0 auto; background: var(--glass); border: 1px solid var(--glass-brd);
+  color: var(--txt-dim); border-radius: 8px; padding: 8px 10px; font: 11px var(--mono);
+  cursor: pointer; min-width: 46px; text-transform: uppercase; letter-spacing: .06em;
+}
+.eye-btn:hover { border-color: var(--accent); color: #fff; }
+
+/* AWS credential status chip */
+.identity {
+  display: inline-flex; align-items: center; gap: 8px;
+  font: 11px var(--mono); padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--glass-brd); background: var(--glass); color: var(--txt-dim);
+}
+.identity .id-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--txt-dim); flex: 0 0 auto; }
+.identity[data-state="ok"] { border-color: rgba(52,211,153,.5); color: #bdf5dd; }
+.identity[data-state="ok"] .id-dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.identity[data-state="bad"] { border-color: var(--fail); color: #ffc9d2; }
+.identity[data-state="bad"] .id-dot { background: var(--fail); box-shadow: 0 0 8px var(--fail); animation: pulse 1.1s ease-in-out infinite; }
+.id-recheck {
+  background: transparent; border: 1px solid var(--glass-brd); color: inherit;
+  border-radius: 6px; padding: 2px 8px; font: 10px var(--mono); cursor: pointer; text-transform: uppercase;
+}
+.id-recheck:hover { border-color: var(--accent); color: #fff; }

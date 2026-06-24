@@ -47,7 +47,10 @@ async function loadDeps(opts = {}) {
 
 // The pre-deploy gate: collect Meta values, with inline help + which console
 // page each comes from. `urlKey` maps to a key resolvable by resolveConsoleUrl.
-export function preGate() {
+// `prefill` pre-fills the NON-SECRET fields (App ID / WABA ID / Phone Number ID /
+// prefix) from the saved config; secrets are never prefilled.
+export function preGate(prefill = {}) {
+  const def = (k, fb = '') => (prefill[k] != null && String(prefill[k]).trim() !== '' ? String(prefill[k]) : fb);
   return {
     kind: 'meta-pre',
     title: 'Connect your WhatsApp (Meta) app',
@@ -57,24 +60,25 @@ export function preGate() {
     consoleUrls: ['apps'],
     fields: [
       {
-        name: 'appId', label: 'App ID', type: 'text', required: true,
+        name: 'appId', label: 'App ID', type: 'text', required: true, default: def('appId'),
         urlKey: 'appDashboard',
         help: 'Meta App Dashboard -> App Settings -> Basic -> "App ID" (a numeric id).',
       },
       {
-        name: 'appSecret', label: 'App Secret', type: 'password', secret: true, required: true,
+        name: 'appSecret', label: 'App Secret', type: 'password', secret: true, reveal: true, required: true,
         urlKey: 'appDashboard',
         help:
           'App Settings -> Basic -> "App Secret" -> Show. This is NOT the access token - it is used ' +
-          'to verify that incoming webhooks really came from Meta (signature check).',
+          'to verify that incoming webhooks really came from Meta (signature check). Click the eye to load ' +
+          'the value already stored in AWS Secrets Manager.',
       },
       {
-        name: 'accessToken', label: 'Access Token', type: 'password', secret: true, required: true,
+        name: 'accessToken', label: 'Access Token', type: 'password', secret: true, reveal: true, required: true,
         urlKey: 'whatsappApiSetup',
         help:
           'WhatsApp -> API Setup: the temporary 24-hour token, or a long-lived System User token. ' +
-          'Used to send messages and call the Graph API. The 24-hour token is fine to start; rotate to ' +
-          'a System User token for anything lasting.',
+          'Used to send messages and call the Graph API. Click the eye to load the value already stored in ' +
+          'AWS Secrets Manager (e.g. to keep it and only change something else).',
       },
       {
         name: 'businessId', label: 'Business (portfolio) ID', type: 'text', required: false,
@@ -83,29 +87,49 @@ export function preGate() {
           'Provide this OR the WABA ID below.',
       },
       {
-        name: 'wabaId', label: 'WhatsApp Business Account (WABA) ID', type: 'text', required: false,
+        name: 'wabaId', label: 'WhatsApp Business Account (WABA) ID', type: 'text', required: false, default: def('wabaId'),
         help:
           'Optional if you gave a Business ID above (it will be auto-discovered when you have exactly one). ' +
           'Numeric.',
       },
       {
-        name: 'phoneNumberId', label: 'Phone Number ID', type: 'text', required: false,
+        name: 'phoneNumberId', label: 'Phone Number ID', type: 'text', required: false, default: def('phoneNumberId'),
         help: 'Optional - auto-discovered from the WABA when there is exactly one number. Numeric.',
       },
       {
-        name: 'verifyToken', label: 'Verify Token', type: 'password', secret: true, required: false,
+        name: 'verifyToken', label: 'Verify Token', type: 'password', secret: true, reveal: true, required: false,
         help:
           'You INVENT this value - it is not from Meta. It is only a shared secret for the webhook ' +
           'handshake: Meta echoes it back and our Lambda checks it matches. Leave blank to auto-generate ' +
-          '(recommended).',
+          '(recommended), or click the eye to load the value already stored.',
       },
       {
         name: 'deploymentPrefix', label: 'Deployment prefix', type: 'text', required: false,
-        default: DEFAULT_PREFIX,
+        default: def('deploymentPrefix', DEFAULT_PREFIX),
         help: 'Resource-name prefix; must match the deploy (default qsr-wa).',
       },
     ],
   };
+}
+
+// Load the NON-SECRET Meta config (App ID / WABA ID / Phone Number ID / prefix)
+// the pre-deploy step wrote to .deploy-tmp/whatsapp-config.env, so a re-open can
+// prefill those fields. Returns {} when absent. Never returns a secret.
+export async function loadMetaConfig(repoRoot, opts = {}) {
+  try {
+    const { pure } = await loadDeps(opts);
+    const cfgPath = join(repoRoot, '.deploy-tmp', 'whatsapp-config.env');
+    if (!existsSync(cfgPath)) return {};
+    const cfg = pure.parseConfigEnv(await readFile(cfgPath, 'utf8'));
+    return {
+      appId: cfg.WHATSAPP_APP_ID || '',
+      wabaId: cfg.WHATSAPP_WABA_ID || '',
+      phoneNumberId: cfg.WHATSAPP_PHONE_NUMBER_ID || '',
+      deploymentPrefix: cfg.WHATSAPP_DEPLOYMENT_PREFIX || '',
+    };
+  } catch {
+    return {};
+  }
 }
 
 // The post-deploy gate is informational: the values were captured pre-deploy
@@ -134,9 +158,20 @@ export async function resolveConsoleUrl(which, { appId, businessId } = {}, opts 
   return urls[which] || urls.apps || 'https://developers.facebook.com/apps/';
 }
 
-// ---------------------------------------------------------------------------
-// Validation (cheap, before touching AWS).
-// ---------------------------------------------------------------------------
+// Read one stored secret value from Secrets Manager on explicit operator
+// request (the UI "eye" reveal). `which` is 'accessToken' | 'appSecret' |
+// 'verifyToken'. Returns '' if unset. The value is only ever returned to the
+// loopback caller; it is never logged.
+export async function getStoredSecret(repoRoot, which, opts = {}) {
+  if (!['accessToken', 'appSecret', 'verifyToken'].includes(which)) return '';
+  const { pure, secrets } = await loadDeps(opts);
+  const cfg = await loadMetaConfig(repoRoot, opts);
+  const prefix = opts.prefix || cfg.deploymentPrefix || DEFAULT_PREFIX;
+  const name = pure.secretNamesForPrefix(prefix)[which];
+  if (!name) return '';
+  const client = secrets.makeClient(opts.region || process.env.AWS_REGION || 'us-east-1');
+  return (await secrets.getSecret(client, name)) || '';
+}
 
 export function validatePreInput(values, opts = {}) {
   const errors = [];

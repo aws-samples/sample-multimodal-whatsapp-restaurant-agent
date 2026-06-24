@@ -15,7 +15,11 @@ export const DEFAULT_PREFIX = 'qsr-wa';
 
 // The gate the UI renders for seeding. All educational copy lives here. Example
 // phone uses a NANP fictional placeholder, never a real number.
-export function syntheticGate() {
+// `opts.prefill` (non-secret previous params) pre-fills field defaults; when
+// `opts.scrubDefault` is true the scrub checkbox starts ticked (rebrand path).
+export function syntheticGate(opts = {}) {
+  const pre = opts.prefill || {};
+  const def = (name, fallback = '') => (pre[name] != null && String(pre[name]).trim() !== '' ? String(pre[name]) : fallback);
   return {
     kind: 'synthetic-data',
     title: 'Seed demo data',
@@ -31,6 +35,11 @@ export function syntheticGate() {
         help: 'Tick to seed only the restaurant and menu. No customer name or phone number is collected or stored.',
       },
       {
+        name: 'scrub', label: 'Scrub existing demo data first (recommended when re-seeding)', type: 'checkbox',
+        checked: Boolean(opts.scrubDefault),
+        help: 'Delete the previously seeded locations/menu/customers/orders before seeding again, so a rebrand does not duplicate locations or orphan the old customer.',
+      },
+      {
         name: 'userName', label: 'Customer display name', type: 'text', required: false,
         help: 'The recognized loyalty customer, e.g. Jane Doe. Leave blank for an anonymous demo.',
       },
@@ -42,19 +51,19 @@ export function syntheticGate() {
           'Leave blank for an anonymous demo.',
       },
       {
-        name: 'location', label: 'Location', type: 'text', required: true,
+        name: 'location', label: 'Location', type: 'text', required: true, default: def('location'),
         help: 'City, ZIP, address, or "lat,lon" to anchor the restaurant search, e.g. Dallas, TX.',
       },
       {
-        name: 'businessName', label: 'Business search term', type: 'text', required: true,
+        name: 'businessName', label: 'Business search term', type: 'text', required: true, default: def('businessName'),
         help: 'What kind of restaurant to populate, e.g. burgers, pizza, tacos.',
       },
       {
-        name: 'companyName', label: 'Company name (rebrand)', type: 'text', required: false,
+        name: 'companyName', label: 'Company name (rebrand)', type: 'text', required: false, default: def('companyName'),
         help: 'Optional - rename the found places to your brand, e.g. Example Cafe.',
       },
       {
-        name: 'deploymentPrefix', label: 'Deployment prefix', type: 'text', required: false, default: DEFAULT_PREFIX,
+        name: 'deploymentPrefix', label: 'Deployment prefix', type: 'text', required: false, default: def('deploymentPrefix', DEFAULT_PREFIX),
         help: 'Must match the deploy (default qsr-wa).',
       },
     ],
@@ -129,6 +138,21 @@ export function runSynthetic(values, opts = {}) {
     child.stdout.on('data', pump);
     child.stderr.on('data', pump);
     child.on('error', (err) => { onLog(`installer: failed to spawn seeding: ${err.message}`); resolve(1); });
+    child.on('close', (code) => resolve(code ?? 0));
+  });
+}
+
+// Scrub previously seeded rows before re-seeding (rebrand / re-seed). Spawns
+// the existing cleanup-data.js --force. Resolves with the child exit code.
+export function runCleanup(opts = {}) {
+  const { repoRoot, onLog = () => {}, nodeBin = process.execPath } = opts;
+  return new Promise((resolve) => {
+    const script = join(repoRoot, 'backend', 'synthetic-data', 'cleanup-data.js');
+    const child = spawn(nodeBin, [script, '--force'], { cwd: repoRoot, env: { ...process.env } });
+    const pump = (chunk) => { for (const line of String(chunk).split(/\r?\n/)) { if (line !== '') onLog(line); } };
+    child.stdout.on('data', pump);
+    child.stderr.on('data', pump);
+    child.on('error', (err) => { onLog(`installer: failed to spawn cleanup: ${err.message}`); resolve(1); });
     child.on('close', (code) => resolve(code ?? 0));
   });
 }

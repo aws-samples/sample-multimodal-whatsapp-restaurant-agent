@@ -29,16 +29,33 @@ function connect() {
   const es = new EventSource(`/events?token=${encodeURIComponent(TOKEN)}`);
 
   es.addEventListener('hello', (e) => {
-    const { layers, mock } = JSON.parse(e.data);
+    const data = JSON.parse(e.data);
+    const { layers, mock, states, progress, classification, availableModes } = data;
     if (mock) q('#mockBadge').hidden = false;
-    renderLayers(layers, (layer) => showDetail(layer));
+    if (data.identity) renderIdentity(data.identity);
+    renderLayers(layers, (layer) => { selectedLayerKey = layer.key; q('#applyLayerBtn').hidden = false; showDetail(layer); });
     initTopology(document.getElementById('archSvg')).then((ok) => {
       if (!ok) {
         document.getElementById('diagramWrap').classList.add('no-diagram');
         document.getElementById('diagramFallback').hidden = false;
       }
+      // Pre-paint already-deployed layers onto the diagram (resume).
+      if (states) {
+        for (const [key, st] of Object.entries(states)) {
+          if (st !== 'done') continue;
+          const meta = getLayerMeta(key);
+          if (meta && meta.nodes && meta.nodes.length) setTopoNodes(meta.nodes, 'done');
+        }
+      }
     });
+    // Pre-paint cards + the progress line from the resumed state.
+    if (states) for (const [key, st] of Object.entries(states)) if (st === 'done') setLayerState(key, 'done');
+    if (progress) setProgress(progress.done, progress.total, null);
     logLine('Connected. Click "Start deployment" to begin.', 'muted');
+    // If an existing deployment is detected, ask what to do.
+    if (classification && classification !== 'not-started' && availableModes && availableModes.length) {
+      renderModeChooser(data);
+    }
   });
 
   es.addEventListener('layer', (e) => {
@@ -86,6 +103,8 @@ function connect() {
     logLine('Secrets populated in AWS Secrets Manager (values never shown).', 'muted');
   });
 
+  es.addEventListener('identity', (e) => renderIdentity(JSON.parse(e.data)));
+
   es.onerror = () => logLine('connection lost (the installer may have exited)', 'muted');
 }
 
@@ -104,6 +123,38 @@ const CONSOLE_LABELS = {
 };
 
 let currentGate = null;
+let selectedLayerKey = null;
+
+const MODE_LABELS = {
+  fresh: 'Fresh install',
+  resume: 'Resume',
+  changes: 'Re-deploy changes',
+  previous: 'Re-deploy with previous parameters',
+  rebrand: 'Re-deploy with new brand parameters',
+};
+
+function renderModeChooser(data) {
+  q('#modesHelp').textContent = data.classification === 'partial'
+    ? `A previous deploy reached ${data.progress.done} of ${data.progress.total} layers. Resume to finish it (completed layers are skipped).`
+    : 'Everything is already deployed and configured. Choose what you want to do.';
+  const list = q('#modesList');
+  list.innerHTML = '';
+  for (const mode of data.availableModes || []) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'mode-btn';
+    const title = document.createElement('div');
+    title.className = 'mode-title';
+    title.textContent = MODE_LABELS[mode] || mode;
+    const desc = document.createElement('div');
+    desc.className = 'mode-desc';
+    desc.textContent = (data.modeDescriptions && data.modeDescriptions[mode]) || '';
+    b.append(title, desc);
+    b.addEventListener('click', () => { command({ cmd: 'mode', path: mode }); q('#modes').hidden = true; });
+    list.appendChild(b);
+  }
+  q('#modes').hidden = false;
+}
 
 function gateFormVal(name) {
   const el = document.querySelector(`#gateForm [name="${name}"]`);
@@ -112,6 +163,29 @@ function gateFormVal(name) {
 
 function openConsole(which) {
   command({ cmd: 'openUrl', which, appId: gateFormVal('appId'), businessId: gateFormVal('businessId') });
+}
+
+// Eye toggle for secret fields: reveal/hide the typed value, and if the field
+// is empty and revealable, fetch the stored value from Secrets Manager first.
+async function toggleReveal(inp, f, eye) {
+  if (inp.type === 'password') {
+    if (!inp.value && f.reveal) {
+      eye.textContent = '...';
+      try {
+        const r = await fetch(`/reveal?which=${encodeURIComponent(f.name)}&token=${encodeURIComponent(TOKEN)}`);
+        const j = await r.json();
+        if (j.value) inp.value = j.value;
+        else logLine(`No stored value for ${f.label} yet - enter one.`, 'muted');
+      } catch (e) {
+        logLine(`Could not load ${f.label}: ${e.message}`, 'err');
+      }
+    }
+    inp.type = 'text';
+    eye.textContent = 'hide';
+  } else {
+    inp.type = 'password';
+    eye.textContent = 'show';
+  }
 }
 
 function renderGate(data) {
@@ -182,6 +256,15 @@ function renderGate(data) {
       if (f.secret) inp.dataset.secret = '1';
       if (f.sensitive) inp.dataset.sensitive = '1';
       row.appendChild(inp);
+      if (f.secret) {
+        const eye = document.createElement('button');
+        eye.type = 'button';
+        eye.className = 'eye-btn';
+        eye.title = 'Show / load the stored value';
+        eye.textContent = 'show';
+        eye.addEventListener('click', () => toggleReveal(inp, f, eye));
+        row.appendChild(eye);
+      }
       if (f.urlKey) {
         const wb = document.createElement('button');
         wb.type = 'button';
@@ -222,6 +305,29 @@ q('#gateSubmit').addEventListener('click', submitGate);
 q('#gateSkip').addEventListener('click', () => { command({ cmd: 'skip' }); hideGate(); });
 q('#metaBtn').addEventListener('click', () => command({ cmd: 'metaOnly' }));
 q('#dataBtn').addEventListener('click', () => command({ cmd: 'syntheticOnly' }));
+q('#recheckBtn').addEventListener('click', () => command({ cmd: 'recheckIdentity' }));
+
+// Render the AWS credential status chip (account, principal, valid/expired).
+function renderIdentity(id) {
+  const wrap = q('#identity');
+  const dot = wrap.querySelector('.id-dot');
+  const text = wrap.querySelector('.id-text');
+  wrap.hidden = false;
+  if (id && id.ok) {
+    wrap.dataset.state = 'ok';
+    const acct = id.account ? `acct ${id.account}` : 'account ?';
+    text.textContent = `${acct} - ${id.display || 'identity'}${id.mock ? ' (mock)' : ''} - valid`;
+    dot.title = id.arn || '';
+  } else {
+    wrap.dataset.state = 'bad';
+    const why = id && id.expired ? 'EXPIRED' : id && id.missing ? 'NO CREDENTIALS' : 'INVALID';
+    text.textContent = `AWS credentials ${why} - refresh in terminal, then recheck`;
+    dot.title = (id && id.reason) || '';
+  }
+}
+q('#applyLayerBtn').addEventListener('click', () => {
+  if (selectedLayerKey) command({ cmd: 'applyLayer', key: selectedLayerKey, force: true });
+});
 
 if (!TOKEN) {
   logLine('Missing session token. Relaunch with ./scripts/deploy-all.sh --interactive-web-ui', 'err');

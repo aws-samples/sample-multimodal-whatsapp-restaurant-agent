@@ -10,6 +10,11 @@
   <header>
     <h1><span class="dot"></span> WhatsApp Restaurant AI Host - Installer</h1>
     <div class="ctrls">
+      <span id="identity" class="identity" hidden>
+        <span class="id-dot"></span>
+        <span class="id-text"></span>
+        <button id="recheckBtn" class="id-recheck" type="button" title="Re-check AWS credentials">recheck</button>
+      </span>
       <span id="mockBadge" class="badge" hidden>mock mode</span>
       <button id="metaBtn">Configure WhatsApp</button>
       <button id="dataBtn">Seed data</button>
@@ -37,6 +42,7 @@
     <section id="sidePane">
       <h2>Details</h2>
       <div id="detail" class="detail">Select a component to see what it is and why it deploys.</div>
+      <button id="applyLayerBtn" class="apply-layer-btn" hidden>Re-apply this layer</button>
       <h2>Log</h2>
       <div id="log" class="log" aria-live="polite"></div>
     </section>
@@ -53,6 +59,14 @@
         <button type="button" id="gateSkip">Skip for now</button>
         <button type="button" id="gateSubmit" class="primary">Continue</button>
       </div>
+    </div>
+  </div>
+
+  <div id="modes" class="gate-overlay" hidden>
+    <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="modesTitle">
+      <h2 id="modesTitle" class="gate-title">Existing deployment detected</h2>
+      <p id="modesHelp" class="gate-help"></p>
+      <div id="modesList" class="modes-list"></div>
     </div>
   </div>
 

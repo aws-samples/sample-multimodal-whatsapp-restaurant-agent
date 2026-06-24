@@ -61,9 +61,55 @@ async function loadSynthetic() {
   return syntheticMod;
 }
 
+let statusMod = null;
+async function loadStatus() {
+  if (!statusMod) statusMod = await import('./lib/status.mjs');
+  return statusMod;
+}
+
+let identityMod = null;
+async function loadIdentity() {
+  if (!identityMod) identityMod = await import('./lib/aws-identity.mjs');
+  return identityMod;
+}
+
+// Cached AWS identity/credential status, refreshed on a poll and before each
+// mutating action so an expiry while the UI is open is reflected live.
+let identityState = null;
+const MOCK_IDENTITY = { ok: true, expired: false, account: '123456789012', arn: 'arn:aws:sts::123456789012:assumed-role/MockAdmin/demo', userId: 'AROAMOCK', display: 'role MockAdmin', mock: true };
+
+async function refreshIdentity() {
+  if (MOCK) { identityState = MOCK_IDENTITY; }
+  else {
+    try { const id = await loadIdentity(); identityState = await id.getIdentity({ region: process.env.AWS_REGION }); }
+    catch (e) { identityState = { ok: false, reason: e.message }; }
+  }
+  sse('identity', identityState);
+  return identityState;
+}
+
+// Guard a mutating action behind a fresh credential check. Returns true when ok;
+// otherwise surfaces refresh guidance + a failed `done` and the caller bails.
+async function ensureCredentials() {
+  if (MOCK) return true;
+  const id = await refreshIdentity();
+  if (id && id.ok) return true;
+  const hint = id && id.expired
+    ? 'AWS credentials are expired. Refresh them in your terminal, then click recheck and try again.'
+    : id && id.missing
+      ? 'No AWS credentials found. Configure them in your terminal, then click recheck and try again.'
+      : `AWS credentials check failed: ${(id && id.reason) || 'unknown'}.`;
+  sse('log', { key: null, line: hint });
+  sse('done', { ok: false, summary: 'Blocked: AWS credentials are not valid.' });
+  return false;
+}
+
 // A "gate" pauses the deploy and waits for the browser to POST a command
 // (submitMeta / skipMeta / a discovery choice). One gate is open at a time.
 let pendingGate = null;
+// Set when the browser disconnects while a gate is open: the gate-driven flow
+// must unwind (not emit the next gate) so a fresh page load starts clean.
+let flowAborted = false;
 function awaitGate() {
   return new Promise((resolve) => { pendingGate = { resolve }; });
 }
@@ -90,6 +136,7 @@ function sse(event, data) {
 }
 
 // Bridge a deploy/mock event onto the SSE control-channel schema.
+let credGuidanceShown = false;
 function onDeployEvent(ev) {
   if (ev.kind === 'marker') {
     const e = ev.event;
@@ -97,6 +144,12 @@ function onDeployEvent(ev) {
     else if (e.type === 'build') sse('build', { key: e.key, phase: e.phase });
   } else if (ev.kind === 'log') {
     sse('log', { key: ev.key, line: ev.line });
+    // Detect expired/missing AWS credentials and surface refresh guidance once,
+    // rather than letting a raw stack trace scroll past (Requirement 9.4).
+    if (!credGuidanceShown && /ExpiredToken|InvalidClientTokenId|security token included in the request is (expired|invalid)|Unable to locate credentials|credentials have expired/i.test(String(ev.line))) {
+      credGuidanceShown = true;
+      sse('log', { key: null, line: 'AWS credentials appear to be expired or missing. Refresh them in your terminal, then click Retry / Start again.' });
+    }
   }
 }
 
@@ -120,9 +173,11 @@ async function loadTopology() {
   return topologyCache;
 }
 
-function spawnLayerProc(key) {
+function spawnLayerProc(key, { force = false } = {}) {
   return new Promise((resolve) => {
-    const child = spawn('bash', [DEPLOY_SCRIPT, '--only', key, '--yes', '--skip-preflight'], {
+    const args = [DEPLOY_SCRIPT, '--only', key, '--yes', '--skip-preflight'];
+    if (force) args.push('--force-deploy');
+    const child = spawn('bash', args, {
       cwd: REPO_ROOT,
       env: { ...process.env, WAUI: '1' },
     });
@@ -175,9 +230,11 @@ function metaLog(line) { sse('log', { key: 'meta', line }); }
 // Loops on a discovery choice or a recoverable error until success or skip.
 async function runMetaPre() {
   const m = await loadMeta();
+  let prefill = {};
+  try { prefill = await m.loadMetaConfig(REPO_ROOT); } catch { /* best-effort */ }
   let extra = {};
   for (;;) {
-    sse('gate', { ...m.preGate(), ...extra });
+    sse('gate', { ...m.preGate(prefill), ...extra });
     const reply = await awaitGate();
     if (!reply || (reply.cmd && reply.cmd.startsWith('skip'))) { metaLog('Skipped WhatsApp onboarding.'); return { skipped: true }; }
     const values = reply.values || {};
@@ -225,7 +282,7 @@ async function runMetaPost(config) {
 // "configure / update WhatsApp" rotation entry).
 async function runMetaGates() {
   const pre = await runMetaPre();
-  if (pre.skipped) return;
+  if (pre.skipped || flowAborted) return;
   await runMetaPost(pre.config);
 }
 
@@ -233,7 +290,9 @@ async function runMetaGates() {
 // redeploying. PutSecretValue overwrites in place, so this rotates tokens.
 async function runMetaOnly() {
   if (deploying) return;
+  if (!(await ensureCredentials())) return;
   deploying = true;
+  flowAborted = false;
   try {
     await runMetaGates();
     sse('done', { ok: true, summary: 'WhatsApp configuration updated.' });
@@ -248,25 +307,54 @@ async function runMetaOnly() {
 // ---- Synthetic data seeding gate ----------------------------------------
 function dataLog(line) { sse('log', { key: 'data', line }); }
 
+// Read the saved deployment prefix from the non-secret Meta config (light, no
+// dependency load) so the seeding form can prefill it even with no prior seed.
+async function savedPrefix() {
+  try {
+    const txt = await readFile(join(REPO_ROOT, '.deploy-tmp', 'whatsapp-config.env'), 'utf8');
+    const m = txt.match(/^WHATSAPP_DEPLOYMENT_PREFIX=(.+)$/m);
+    return m ? m[1].trim() : '';
+  } catch { return ''; }
+}
+
 // Present the seeding form; on submit, validate and spawn the generator.
 // Loops on a validation/seed error until success or skip. The phone number is
 // redacted from streamed output inside runSynthetic (never logged here either).
-async function runSyntheticGate() {
+async function runSyntheticGate(gateOpts = {}) {
   const s = await loadSynthetic();
+  // Enrich the prefill: fall back to the saved deployment prefix so the form is
+  // never fully empty even if no prior installer seed saved the other params.
+  const prefill = { ...(gateOpts.prefill || {}) };
+  if (!prefill.deploymentPrefix) {
+    const p = await savedPrefix();
+    if (p) prefill.deploymentPrefix = p;
+  }
+  const opts = { ...gateOpts, prefill };
   let extra = {};
   for (;;) {
-    sse('gate', { ...s.syntheticGate(), ...extra });
+    sse('gate', { ...s.syntheticGate(opts), ...extra });
     const reply = await awaitGate();
     if (!reply || (reply.cmd && reply.cmd.startsWith('skip'))) { dataLog('Skipped synthetic data seeding.'); return { skipped: true }; }
     const values = reply.values || {};
     if (MOCK) {
+      if (values.scrub) dataLog('[mock] scrubbed previous demo data.');
       dataLog('[mock] seeded locations + menu' + (values.anonymous ? ' (anonymous demo).' : ' + a loyalty customer.'));
       return { ok: true, mock: true };
     }
     const check = s.validateSyntheticInput(values);
     if (!check.ok) { extra = { error: check.errors.join(' ') }; continue; }
+    if (values.scrub) {
+      dataLog('Scrubbing previously seeded data...');
+      const sc = await s.runCleanup({ repoRoot: REPO_ROOT, onLog: dataLog });
+      if (sc !== 0) { extra = { error: `Scrub exited with code ${sc}. Fix and retry, or untick scrub.` }; continue; }
+    }
     const code = await s.runSynthetic(values, { repoRoot: REPO_ROOT, onLog: dataLog });
-    if (code === 0) { dataLog('Synthetic data seeding complete.'); return { ok: true }; }
+    if (code === 0) {
+      dataLog('Synthetic data seeding complete.');
+      // Persist the NON-SECRET parameter set so "previous parameters" can reuse it.
+      try { const st = await loadStatus(); await st.saveParams(REPO_ROOT, values); } catch { /* best-effort */ }
+      return { ok: true };
+    }
     extra = { error: `Seeding exited with code ${code}. Check the log above and retry, or skip.` };
   }
 }
@@ -274,15 +362,84 @@ async function runSyntheticGate() {
 // Standalone re-seed entry (reconfigure path foundation).
 async function runSyntheticOnly() {
   if (deploying) return;
+  if (!(await ensureCredentials())) return;
   deploying = true;
+  flowAborted = false;
   try {
-    await runSyntheticGate();
+    let prefill = {};
+    try { const st = await loadStatus(); prefill = await st.loadParams(REPO_ROOT); } catch { /* ignore */ }
+    await runSyntheticGate({ prefill });
     sse('done', { ok: true, summary: 'Synthetic data step finished.' });
   } catch (err) {
     sse('log', { key: 'data', line: `Synthetic data error: ${err.message}` });
     sse('done', { ok: false, summary: 'Synthetic data step stopped on an error.' });
   } finally {
     deploying = false;
+  }
+}
+
+// Reconfigure (no infra redeploy). Opts: { meta, synthetic, prefill, scrubDefault }.
+// "changes" runs both gates; "previous"/"rebrand" run seeding only (the Meta
+// secrets are already in Secrets Manager - use "changes" or Configure WhatsApp
+// to rotate them).
+async function runReconfigure(opts = {}) {
+  if (deploying) return;
+  if (!(await ensureCredentials())) return;
+  const { meta = true, synthetic = true, prefill, scrubDefault } = opts;
+  deploying = true;
+  flowAborted = false;
+  try {
+    if (meta && !flowAborted) await runMetaGates();
+    if (synthetic && !flowAborted) await runSyntheticGate({ prefill, scrubDefault });
+    if (!flowAborted) sse('done', { ok: true, summary: 'Reconfiguration finished.' });
+  } catch (err) {
+    sse('log', { key: null, line: `Reconfiguration error: ${err.message}` });
+    sse('done', { ok: false, summary: 'Reconfiguration stopped on an error.' });
+  } finally {
+    deploying = false;
+  }
+}
+
+// Re-apply / retry a single layer. `force` adds --force-deploy so a layer
+// already marked done is re-deployed (reconfigure); without it, a failed layer
+// is simply re-attempted. The key is validated against the manifest.
+async function runApplyLayer(key, force) {
+  if (deploying) return;
+  const layers = await loadLayers();
+  if (!layers.some((l) => l.key === key)) {
+    sse('log', { key: null, line: `Unknown layer "${key}".` });
+    return;
+  }
+  if (!(await ensureCredentials())) return;
+  deploying = true;
+  flowAborted = false;
+  try {
+    sse('progress', { done: 0, total: 1, activeKey: key });
+    const code = MOCK ? await mockLayerProc(key) : await spawnLayerProc(key, { force });
+    const ok = code === 0;
+    sse('progress', { done: ok ? 1 : 0, total: 1, activeKey: null });
+    sse('done', { ok, summary: ok ? `Layer ${key} re-applied.` : `Layer ${key} failed - see the log.` });
+  } catch (err) {
+    sse('log', { key, line: `Re-apply error: ${err.message}` });
+    sse('done', { ok: false, summary: `Layer ${key} re-apply stopped on an error.` });
+  } finally {
+    deploying = false;
+  }
+}
+
+// Launch-mode selection (Requirement 15). Resume/fresh run the (idempotent)
+// deploy; the reconfigure paths re-open the gates without redeploying infra.
+async function handleMode(cmd) {
+  const path = (cmd && cmd.path) || 'fresh';
+  if (path === 'fresh' || path === 'resume') { runDeploy(); return; }
+  // "changes" rotates secrets + re-seeds; "previous"/"rebrand" only re-seed
+  // (secrets are already populated) - going straight to the seeding form.
+  if (path === 'changes') { runReconfigure({ meta: true, synthetic: true }); return; }
+  if (path === 'rebrand') { runReconfigure({ meta: false, synthetic: true, scrubDefault: true }); return; }
+  if (path === 'previous') {
+    let prefill = {};
+    try { const st = await loadStatus(); prefill = await st.loadParams(REPO_ROOT); } catch { /* ignore */ }
+    runReconfigure({ meta: false, synthetic: true, prefill });
   }
 }
 
@@ -297,7 +454,9 @@ async function openMetaUrl(cmd) {
 
 async function runDeploy() {
   if (deploying) return;
+  if (!(await ensureCredentials())) return;
   deploying = true;
+  flowAborted = false;
   let ok = true;
   try {
     const layers = await loadLayers();
@@ -310,9 +469,9 @@ async function runDeploy() {
       done += 1;
       sse('progress', { done, total: layers.length, activeKey: null });
     }
-    if (ok) {
+    if (ok && !flowAborted) {
       await runMetaGates();
-      await runSyntheticGate();
+      if (!flowAborted) await runSyntheticGate();
     }
   } catch (err) {
     ok = false;
@@ -358,6 +517,22 @@ const server = http.createServer(async (req, res) => {
   // ---- control channel (requires the session token) ----
   if (tokenFromUrl(req.url) !== SESSION_TOKEN) { res.writeHead(401).end('unauthorized'); return; }
 
+  // Reveal a stored secret on explicit operator request (the UI "eye"). Loopback
+  // + token gated; the value is returned only to this local caller and never
+  // logged. This is an operator-initiated reveal of their own stored secret.
+  if (req.method === 'GET' && path === '/reveal') {
+    const which = url.searchParams.get('which');
+    if (!['accessToken', 'appSecret', 'verifyToken'].includes(which)) { res.writeHead(400).end('bad which'); return; }
+    let value = '';
+    if (MOCK) value = `mock-${which}-value`;
+    else {
+      try { const m = await loadMeta(); value = await m.getStoredSecret(REPO_ROOT, which); } catch { value = ''; }
+    }
+    res.writeHead(200, { 'content-type': CONTENT_TYPES['.json'] });
+    res.end(JSON.stringify({ which, value: value || '' }));
+    return;
+  }
+
   if (req.method === 'GET' && path === '/events') {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -366,10 +541,32 @@ const server = http.createServer(async (req, res) => {
     });
     res.write(': connected\n\n');
     sseClients.add(res);
-    loadLayers().then((layers) => {
-      res.write(`event: hello\ndata: ${JSON.stringify({ layers, mock: MOCK })}\n\n`);
+    (async () => {
+      const layers = await loadLayers();
+      if (identityState === null) { try { await refreshIdentity(); } catch { /* ignore */ } }
+      let status = {};
+      // Skip status detection in mock mode so a demo always starts fresh and
+      // never reads the operator's real .deployment-state.json.
+      if (!MOCK) {
+        try {
+          const st = await loadStatus();
+          status = await st.detectStatus({ repoRoot: REPO_ROOT, layers });
+          status.modeDescriptions = st.MODE_DESCRIPTIONS;
+        } catch { status = {}; }
+      }
+      res.write(`event: hello\ndata: ${JSON.stringify({ layers, mock: MOCK, identity: identityState, ...status })}\n\n`);
+    })();
+    req.on('close', () => {
+      sseClients.delete(res);
+      // If the browser navigated away while a gate was open, abort the waiting
+      // flow so a fresh page load starts clean (otherwise the next action hits
+      // the `deploying` guard). A mid-layer deploy has no open gate, so it is
+      // unaffected.
+      if (sseClients.size === 0 && pendingGate) {
+        flowAborted = true;
+        resolveGate({ cmd: 'skip', aborted: true });
+      }
     });
-    req.on('close', () => sseClients.delete(res));
     return;
   }
 
@@ -383,10 +580,13 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true }));
       if (cmd.cmd === 'start') runDeploy();
       else if (cmd.cmd === 'exit') shutdown();
+      else if (cmd.cmd === 'mode') handleMode(cmd);
+      else if (cmd.cmd === 'applyLayer' && cmd.key) runApplyLayer(cmd.key, Boolean(cmd.force));
       else if (cmd.cmd === 'metaOnly') runMetaOnly();
       else if (cmd.cmd === 'syntheticOnly') runSyntheticOnly();
       else if (cmd.cmd === 'submitMeta' || cmd.cmd === 'submitData' || (cmd.cmd && cmd.cmd.startsWith('skip'))) resolveGate(cmd);
       else if (cmd.cmd === 'openUrl') openMetaUrl(cmd);
+      else if (cmd.cmd === 'recheckIdentity') refreshIdentity();
     });
     return;
   }
@@ -403,12 +603,25 @@ function openBrowser(url) {
 }
 
 function shutdown() {
+  if (identityTimer) { clearInterval(identityTimer); identityTimer = null; }
   for (const res of sseClients) { try { res.end(); } catch { /* ignore */ } }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 500).unref();
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+// Poll the credential status so an expiry that happens while the installer is
+// open is reflected live in the UI. Only when a browser is connected; not in
+// mock mode (which has a static synthetic identity).
+let identityTimer = null;
+function startIdentityPolling() {
+  if (identityTimer || MOCK) return;
+  identityTimer = setInterval(() => {
+    if (sseClients.size > 0) refreshIdentity().catch(() => {});
+  }, 45000);
+  identityTimer.unref?.();
+}
 
 server.listen(0, '127.0.0.1', () => {
   const { port } = server.address();
@@ -419,4 +632,5 @@ server.listen(0, '127.0.0.1', () => {
   if (MOCK) console.log('  (mock mode: no AWS resources will be deployed)');
   console.log('');
   openBrowser(url);
+  startIdentityPolling();
 });
