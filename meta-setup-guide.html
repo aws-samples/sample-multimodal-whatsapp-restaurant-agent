@@ -127,8 +127,11 @@
         <h3 style="margin-top:10px">Option A - Temporary token (fastest, for a first test)</h3>
         <p class="where"><b>Where:</b> <b>WhatsApp &rarr; API Setup</b> &rarr; "Temporary access token". It expires in 24 hours.</p>
         <h3 style="margin-top:10px">Option B - System User token (recommended, long-lived)</h3>
-        <p>A System User token does not expire, so the deployment keeps working. The installer can
-        automate creating this for you if you provide an admin-authorized token once; otherwise:</p>
+        <p>A System User token does not expire, so the deployment keeps working. You can create one
+        two ways: <b>manually in the console</b> (no token needed - you just sign in as a Business
+        admin), or let the <b>installer automate it</b> (which needs a short-lived admin token once -
+        see "Getting an admin token" below).</p>
+        <p><b>Manual (no token needed):</b></p>
         <ol>
           <li>Open <a href="https://business.facebook.com/settings/system-users">Business Settings &rarr; Users &rarr; System users</a>.</li>
           <li><b>Add</b> a system user (role: Admin or Employee).</li>
@@ -138,8 +141,27 @@
               &rarr; set expiration to <b>Never</b>.</li>
           <li>Copy the token (shown once).</li>
         </ol>
-        <div class="note">To list your WABA / phone number automatically, the token needs
-        <code>whatsapp_business_management</code>. An App ID + App Secret alone is <b>not</b> enough for discovery.</div>
+
+        <h3 style="margin-top:10px">Getting an admin token (only for the installer's automated path)</h3>
+        <p>The manual steps above need no token. The installer's <i>optional</i> automation needs a
+        short-lived admin token once. The place to get one is the <b>Graph API Explorer</b> - it is
+        not obvious in Business Settings, so here are the exact steps:</p>
+        <ol>
+          <li>Open the <a href="https://developers.facebook.com/tools/explorer/">Graph API Explorer</a>
+              (Meta for Developers &rarr; Tools &rarr; Graph API Explorer).</li>
+          <li>Top-right, set <b>Meta App</b> to your app.</li>
+          <li>In the token dropdown choose <b>Get User Access Token</b> (a user token, not an app token).</li>
+          <li>Tick these <b>permissions</b>: <code>business_management</code>,
+              <code>whatsapp_business_management</code>, <code>whatsapp_business_messaging</code>.</li>
+          <li>Click <b>Generate Access Token</b> and approve the login/consent dialog. You must be an
+              admin of both the app and the Business.</li>
+          <li>Copy the token from the <b>Access Token</b> box. It is short-lived (about 1-2 hours) -
+              that is fine: the installer uses it once to create the System User and mint the
+              permanent token, then never needs it again.</li>
+        </ol>
+        <div class="note">To list your WABA / phone number automatically (and to run the System User
+        automation), the token needs <code>whatsapp_business_management</code>. An App ID + App Secret
+        alone is <b>not</b> enough.</div>
       </div>
     </div>
   </div>
