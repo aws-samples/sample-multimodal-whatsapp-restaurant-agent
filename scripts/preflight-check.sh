@@ -212,6 +212,18 @@ fi
 # Assert we do not require python/pip/poetry/uv/etc. at the dev layer.
 info "This workflow does NOT require python, pip, pip3, poetry, uv, pyenv, conda, openssl, uuidgen, portaudio, libsrtp, ffmpeg at the dev layer. All Python work runs inside CodeBuild at deploy time."
 
+# Onboarding tooling deps (warn-only). The Meta onboarding step (the
+# whatsapp-setup CLI and the web installer's Configure WhatsApp gate) imports the
+# AWS SDK + inquirer from scripts/whatsapp-setup/node_modules. The deploy itself
+# does not need them, and both entry points now auto-install on first use, so
+# this is informational only.
+PF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$PF_DIR/whatsapp-setup/node_modules/@aws-sdk/client-secrets-manager/package.json" ]; then
+  pass "WhatsApp onboarding tooling dependencies installed"
+else
+  warn "WhatsApp onboarding tooling deps not installed yet (scripts/whatsapp-setup); they auto-install when you run the Meta step. To pre-install: cd scripts/whatsapp-setup && npm install"
+fi
+
 # Meta prerequisite reminder (manual, not a check).
 info "MANUAL PREREQUISITE: the Meta Business account, WhatsApp Business Account, phone number, Calling API access, and the Access_Token / App_Secret / Verify_Token secret values are set up in the Meta + AWS consoles. They are needed only for live testing, not for deploy."
 
