@@ -229,7 +229,20 @@ export async function runPreDeploy(values, opts = {}) {
     const businessId = String(v.businessId || '').trim();
     onLog('Discovering your WhatsApp Business Account...');
     const owned = await graph.getOwnedWabas(accessToken, businessId);
-    const wabas = pure.parseWabas(owned.body);
+    if (pure.isPermissionError(owned.body)) {
+      return { ok: false, stage: 'discover-waba', reason:
+        'your token cannot list WhatsApp Business Accounts. Use a business-scoped token with the whatsapp_business_management permission, or enter the WABA ID manually above.' };
+    }
+    let wabas = pure.parseWabas(owned.body);
+    // Fallback: WABAs shared with (not owned by) the business.
+    if (wabas.length === 0 && typeof graph.getClientWabas === 'function') {
+      const client = await graph.getClientWabas(accessToken, businessId);
+      if (pure.isPermissionError(client.body)) {
+        return { ok: false, stage: 'discover-waba', reason:
+          'your token cannot list WhatsApp Business Accounts. Use a business-scoped token with the whatsapp_business_management permission, or enter the WABA ID manually above.' };
+      }
+      wabas = pure.parseWabas(client.body);
+    }
     const pick = pure.selectSingleOrChoose(wabas);
     if (pick.mode === 'auto') {
       wabaId = pick.value.id;
@@ -240,7 +253,7 @@ export async function runPreDeploy(values, opts = {}) {
         needChoice: { kind: 'waba', options: wabas.map((w) => ({ id: w.id, label: w.name || w.id })) },
       };
     } else {
-      return { ok: false, stage: 'discover-waba', reason: 'no_waba_found_for_business_id' };
+      return { ok: false, stage: 'discover-waba', reason: 'no WhatsApp Business Account found for that Business ID - check the ID, or enter the WABA ID manually above.' };
     }
   }
 
@@ -248,7 +261,12 @@ export async function runPreDeploy(values, opts = {}) {
   let phoneNumberId = String(v.phoneNumberId || '').trim();
   if (!phoneNumberId) {
     onLog('Discovering the WhatsApp phone number...');
-    const phones = pure.parsePhoneNumbers((await graph.getPhoneNumbers(accessToken, wabaId)).body);
+    const phonesResp = await graph.getPhoneNumbers(accessToken, wabaId);
+    if (pure.isPermissionError(phonesResp.body)) {
+      return { ok: false, stage: 'discover-phone', reason:
+        'your token cannot list phone numbers for that WABA. Use a business-scoped token with the whatsapp_business_management permission, or enter the Phone Number ID manually above.' };
+    }
+    const phones = pure.parsePhoneNumbers(phonesResp.body);
     const pick = pure.selectSingleOrChoose(phones);
     if (pick.mode === 'auto') {
       phoneNumberId = pick.value.id;
@@ -262,7 +280,7 @@ export async function runPreDeploy(values, opts = {}) {
         },
       };
     } else {
-      return { ok: false, stage: 'discover-phone', reason: 'no_phone_number_found' };
+      return { ok: false, stage: 'discover-phone', reason: 'no phone number found under that WABA - enter the Phone Number ID manually above.' };
     }
   }
 

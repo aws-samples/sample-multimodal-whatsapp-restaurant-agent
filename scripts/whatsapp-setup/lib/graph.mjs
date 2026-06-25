@@ -74,6 +74,16 @@ export function getOwnedWabas(token, businessId) {
   });
 }
 
+// GET /{business-id}/client_whatsapp_business_accounts - WABAs shared with the
+// business (Tech Provider / client relationship). Fallback when none are owned
+// directly.
+export function getClientWabas(token, businessId) {
+  return graphRequest('GET', `/${businessId}/client_whatsapp_business_accounts`, {
+    token,
+    query: { fields: 'id,name' },
+  });
+}
+
 // GET /{app-id}/subscriptions - read existing webhook subscriptions (for the
 // idempotent no-op check).
 export function getAppSubscriptions(token, appId) {

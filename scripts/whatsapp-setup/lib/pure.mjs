@@ -64,6 +64,17 @@ export function interpretTokenValidation(status, body) {
   };
 }
 
+// Detect a Graph permission/authorization error (insufficient scopes, or no
+// access to the business object) from a parsed response body, so the caller can
+// tell the operator to use a business-scoped token instead of showing a generic
+// "not found". Token-expired (190) is interpreted separately.
+export function isPermissionError(body) {
+  const err = (body && body.error) || {};
+  if ([10, 200, 272, 803].includes(err.code)) return true;
+  if (err.type === 'OAuthException' && /permission|scope|whatsapp_business_management|business_management/i.test(err.message || '')) return true;
+  return false;
+}
+
 // Given the JSON from GET /{waba-id}/phone_numbers, return the list of
 // { id, displayPhoneNumber, verifiedName } entries (defensive against shape).
 export function parsePhoneNumbers(body) {
