@@ -214,11 +214,15 @@ It opens a loopback page that animates the architecture as each layer deploys, w
 
 ### Connect the WhatsApp number (Meta side)
 
+> **New to Meta's console?** Open `meta-setup-guide.html` (in the repo root) for a
+> step-by-step guide to collecting each value (App ID, App Secret, Access Token,
+> Business ID, and the operator-invented Verify Token) and wiring the webhook.
+
 The AWS deploy provisions the webhook URL and creates the empty AWS Secrets Manager containers; the `scripts/whatsapp-setup/` CLI then automates the Meta wiring the Graph API allows. After creating your Meta app in the console:
 
 ```bash
 cd scripts/whatsapp-setup
-npm install
+# Dependencies auto-install on first run (or run `npm install`).
 
 # Pre-deploy: validate your access token, auto-discover the WABA + Phone Number ID,
 # generate a Verify Token, and populate the three Secrets Manager containers.
@@ -227,9 +231,14 @@ npm start          # choose "Pre-deploy"
 # Post-deploy (after cdk-outputs/wa-webhook.json exists): set the webhook callback
 # URL + Verify Token + subscribed fields, and subscribe the WABA. Idempotent.
 npm start          # choose "Post-deploy"
+
+# Verify the agent will actually reply (read-only end-to-end check):
+node whatsapp-setup.mjs --doctor
 ```
 
-Secrets are written only to AWS Secrets Manager (never printed or logged); non-secret identifiers are written to the gitignored `.deploy-tmp/whatsapp-config.env`. See `scripts/whatsapp-setup/README.md` for the non-interactive / environment-variable mode.
+Secrets are written only to AWS Secrets Manager (never printed or logged); non-secret identifiers are written to the gitignored `.deploy-tmp/whatsapp-config.env`. See `scripts/whatsapp-setup/README.md` for the non-interactive / environment-variable mode, the `--doctor` health check, and the experimental `--system-user` long-lived-token automation.
+
+**Deploy reliability:** layer dependencies are declared in `scripts/web-ui-deployment/layers.json`. A `deploy-all.sh --only <layer>` run checks that layer's prerequisites and offers to add missing ones (or pass `--with-deps` to include them non-interactively). If a re-run finds a layer marked deployed but its `cdk-outputs/*.json` is missing, it re-hydrates the outputs from the live stack instead of aborting. After the webhook layer, the deploy warns if any Meta secret is still empty (the agent cannot reply until they are set).
 
 **Note:** For a detailed understanding of each deployment step, see the [Manual Deployment](#manual-deployment) section, and open `flow-visualizer.html` for an interactive architecture walkthrough.
 

@@ -44,7 +44,19 @@ seeding - without touching AWS or Meta. Use it to see how the installer works.
    runs the existing `backend/synthetic-data` generator.
 
 You can also run the WhatsApp step or the seeding step on their own with the
-**Configure WhatsApp** and **Seed data** buttons in the header.
+**Configure WhatsApp** and **Seed data** buttons in the header. Two more header
+buttons help with onboarding:
+
+- **Verify config** - a read-only doctor check: are the secrets populated, the
+  Phone Number ID set, the webhook deployed and subscribed, and does the live
+  verify-handshake pass? Each failure shows a remediation hint.
+- **System User** (experimental) - mint a non-expiring Meta token from a one-time
+  admin authorization and store it as the Access Token. Falls back to manual
+  paste if Meta does not permit it.
+
+When you deploy a **subset** of layers (the Options dialog), the installer checks
+that your selection includes each layer's required dependencies; if any are
+missing it offers to add them (in dependency order) before deploying.
 
 ## Re-running an existing deployment
 
