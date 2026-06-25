@@ -1,76 +1,112 @@
 {
-  "comment": "Single source of truth for the web UI installer. One entry per deploy-all.sh layer key, in deploy order. 'nodes' maps to node ids in the architecture visualizer (index.html); an empty list means no dedicated node yet (rendered generically). 'why' is the plain-language explanation shown in the UI. Keep this in sync with deploy-all.sh component keys (a test enforces it).",
+  "comment": "Single source of truth for the web UI installer AND the deploy dependency graph. One entry per deploy-all.sh layer key, in deploy order. 'nodes' maps to node ids in the architecture visualizer (index.html); an empty list means no dedicated node yet (rendered generically). 'why' is the plain-language explanation shown in the UI. 'dependsOn' lists required upstream layer keys (enforced by the dependency-aware deploy); 'recommends' lists optional upstream layers the consumer has a safe default for. 'stack' is the CloudFormation stack name (used by drift self-heal and the doctor). Keep this in sync with deploy-all.sh component keys and 'cdk deploy <stack>' targets (tests enforce both).",
   "layers": [
     {
       "key": "wa-network",
       "name": "Shared VPC",
       "nodes": [],
+      "stack": "NetworkStack",
+      "dependsOn": [],
+      "recommends": [],
       "why": "A private Virtual Private Cloud (VPC) with a NAT gateway. Only the voice-call runtime needs it, for outbound media to the Amazon Kinesis Video Streams (KVS) managed TURN relay."
     },
     {
       "key": "wa-ddb",
       "name": "DynamoDB tables",
       "nodes": ["ddbTables"],
+      "stack": "DynamoDBStack",
+      "dependsOn": [],
+      "recommends": [],
       "why": "Amazon DynamoDB tables for customers, orders, menu, carts, and locations - the data the ordering tools read and write."
     },
     {
       "key": "wa-location",
       "name": "Location Service",
       "nodes": ["location"],
+      "stack": "LocationStack",
+      "dependsOn": [],
+      "recommends": [],
       "why": "Amazon Location Service for geocoding an address and finding the nearest restaurant."
     },
     {
       "key": "wa-lambdas",
       "name": "Ordering Lambdas",
       "nodes": ["orderLambdas"],
+      "stack": "LambdaStack",
+      "dependsOn": ["wa-ddb", "wa-location"],
+      "recommends": [],
       "why": "AWS Lambda functions holding the ordering business logic (GetMenu, AddToCart, PlaceOrder, and the rest)."
     },
     {
       "key": "wa-apigw",
       "name": "Backend REST API",
       "nodes": ["restApi"],
+      "stack": "ApiGatewayStack",
+      "dependsOn": ["wa-lambdas"],
+      "recommends": [],
       "why": "An Amazon API Gateway REST API (AWS Identity and Access Management authorized) that fronts the ordering Lambdas."
     },
     {
       "key": "wa-gateway",
       "name": "AgentCore Gateway (MCP tools)",
       "nodes": ["gateway"],
+      "stack": "AgentCoreGatewayStack",
+      "dependsOn": ["wa-apigw"],
+      "recommends": [],
       "why": "Amazon Bedrock AgentCore Gateway exposes the backend API as discoverable Model Context Protocol (MCP) tools the agents call by name."
     },
     {
       "key": "wa-memory",
       "name": "Shared AgentCore Memory",
       "nodes": ["sharedMemory"],
+      "stack": "MemoryStack",
+      "dependsOn": [],
+      "recommends": [],
       "why": "One Amazon Bedrock AgentCore Memory resource keyed by a pseudonymous customer id, shared by all three runtimes so a customer is recognized across channels."
     },
     {
       "key": "wa-runtime-call",
       "name": "Voice-call runtime (WebRTC)",
       "nodes": ["callRuntime", "kvsTurn"],
+      "stack": "VoiceWebrtcStack",
+      "dependsOn": ["wa-gateway", "wa-memory", "wa-network"],
+      "recommends": [],
       "why": "The Web Real-Time Communication (WebRTC) voice agent on AgentCore Runtime (Amazon Nova 2 Sonic), with media relayed through the KVS managed TURN relay."
     },
     {
       "key": "wa-runtime-voicenotes",
       "name": "Voice-note runtime",
       "nodes": ["voiceNotesRuntime"],
+      "stack": "VoiceNotesStack",
+      "dependsOn": ["wa-gateway", "wa-memory"],
+      "recommends": [],
       "why": "A bounded Amazon Nova 2 Sonic speech-to-speech runtime that turns an inbound voice note into a spoken reply (OGG Opus in, OGG Opus out)."
     },
     {
       "key": "wa-runtime-chat",
       "name": "Chat runtime (multimodal text)",
       "nodes": ["chatRuntime"],
+      "stack": "ChatAgentStack",
+      "dependsOn": ["wa-gateway", "wa-memory"],
+      "recommends": [],
       "why": "The multimodal text runtime: Amazon Nova 2 Lite via the Bedrock Converse API, handling text, images, and documents."
     },
     {
       "key": "wa-webhook",
       "name": "WhatsApp webhook + delivery",
       "nodes": ["webhookGw", "webhookLambda", "inboundQueue", "worker", "senderLambda", "winTable", "secrets"],
+      "stack": "WebhookStack",
+      "dependsOn": ["wa-gateway", "wa-memory", "wa-runtime-chat"],
+      "recommends": ["wa-runtime-voicenotes", "wa-runtime-call"],
       "why": "The only public endpoint: an Amazon API Gateway webhook, an ingest Lambda that verifies and enqueues to Amazon SQS, a worker Lambda, a Sender Lambda for replies, the last-inbound window table, and the Secrets Manager containers for the Meta tokens."
     },
     {
       "key": "wa-order-notifier",
       "name": "Order-status notifier",
       "nodes": [],
+      "stack": "OrderNotifierStack",
+      "dependsOn": ["wa-ddb", "wa-webhook"],
+      "recommends": [],
       "why": "Sends proactive order-status updates to the customer on WhatsApp as the order advances, with an optional demo kitchen simulator."
     }
   ]

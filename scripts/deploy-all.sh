@@ -380,11 +380,61 @@ if [ -n "$ONLY_COMPONENT" ]; then
   print_info    "Upstream outputs will still be loaded from cdk-outputs/*.json"
 fi
 
+# --- Drift self-heal: keep cdk-outputs/*.json in sync with reality ----------
+# The deploy-state file can say a layer is deployed while the local outputs file
+# it wrote is missing (fresh checkout, deleted cdk-outputs/, or a prior subset
+# run on another machine). Downstream layers read those outputs, so a stale skip
+# would abort mid-run. These helpers re-hydrate the outputs from the live stack
+# (read-only), or signal a re-deploy when the stack itself is gone. The stack
+# name's single source of truth is layers.json via the deps resolver.
+DEPS_CLI="$SCRIPT_DIR/web-ui-deployment/lib/deps.mjs"
+HEAL_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+
+layer_stack() {
+  node "$DEPS_CLI" stack "$1" 2>/dev/null || echo ""
+}
+
+# outputs_present <outputs_file> - 0 if the file exists and its (single) stack
+# object holds at least one output value, else 1.
+outputs_present() {
+  local file=$1
+  [ -f "$file" ] || return 1
+  node -e "try{const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));const s=Object.values(d)[0]||{};process.exit(Object.keys(s).length?0:1)}catch(e){process.exit(1)}" "$file"
+}
+
+# ensure_layer_outputs <component> [stack] - guarantee the outputs file exists.
+# Returns 0 if present or successfully re-hydrated from the live stack; 1 if the
+# stack does not exist (caller should re-deploy). Read-only on AWS.
+ensure_layer_outputs() {
+  local component=$1 stack=${2:-}
+  local file="$WORKSPACE_ROOT/$OUTPUTS_DIR/$component.json"
+  if outputs_present "$file"; then return 0; fi
+  [ -n "$stack" ] || stack="$(layer_stack "$component")"
+  [ -n "$stack" ] || return 1
+  [ -n "$(stack_exists "$stack" "$HEAL_REGION")" ] || return 1
+  print_info "Re-hydrating $OUTPUTS_DIR/$component.json from existing stack $stack ..."
+  local outputs_json
+  outputs_json=$(aws cloudformation describe-stacks --stack-name "$stack" --region "$HEAL_REGION" --query 'Stacks[0].Outputs' --output json 2>/dev/null || echo "null")
+  printf '%s' "$outputs_json" | node "$SCRIPT_DIR/web-ui-deployment/lib/cfn-outputs.mjs" "$stack" "$file"
+}
+
+# missing_outputs_abort <component> <what> - replace a bare abort with a
+# diagnostic naming the layer and the exact re-deploy command.
+missing_outputs_abort() {
+  local component=$1 what=$2
+  print_error "$what"
+  print_error "Layer '$component' is marked deployed but its outputs are unavailable and could not be re-hydrated from CloudFormation."
+  print_error "Re-deploy it with:  ./scripts/deploy-all.sh --only $component --force-deploy"
+  exit 5
+}
+
 # should_deploy <component> - returns 0 when this layer should run, 1 when it
 # should be skipped. Encapsulates the three gates:
 #   1. --only <X> - run X, skip everything else.
 #   2. --force-deploy - re-run every layer that is not skipped by --only.
-#   3. Default (idempotent) - skip anything the state file marks as done.
+#   3. Default (idempotent) - skip anything the state file marks as done,
+#      BUT self-heal first: if a skipped layer's outputs are missing, re-hydrate
+#      them from the live stack, or re-deploy if the stack is gone (stale state).
 should_deploy() {
   local component="$1"
   if [ -n "$ONLY_COMPONENT" ]; then
@@ -396,8 +446,23 @@ should_deploy() {
   if [ "$FORCE_DEPLOY" = true ] || [ "$(is_deployed "$component")" != "true" ]; then
     CURRENT_LAYER="$component"; waui_marker layer "$component" start; return 0
   fi
-  waui_marker layer "$component" skipped
-  return 1
+  # State says deployed. Fast path: outputs already present -> skip as before.
+  local _outfile="$WORKSPACE_ROOT/$OUTPUTS_DIR/$component.json"
+  if outputs_present "$_outfile"; then
+    waui_marker layer "$component" skipped; return 1
+  fi
+  # Outputs missing -> drift. Resolve the stack and try to recover read-only.
+  local _stack; _stack="$(layer_stack "$component")"
+  if [ -n "$_stack" ] && [ -n "$(stack_exists "$_stack" "$HEAL_REGION")" ]; then
+    print_warning "$component is marked deployed but $OUTPUTS_DIR/$component.json is missing; re-hydrating from stack $_stack."
+    if ensure_layer_outputs "$component" "$_stack"; then
+      waui_marker layer "$component" skipped; return 1
+    fi
+    print_warning "Could not re-hydrate outputs for $component; re-deploying it."
+  else
+    print_warning "$component is marked deployed but stack ${_stack:-<unknown>} does not exist; deploy-state is stale, re-deploying it."
+  fi
+  CURRENT_LAYER="$component"; waui_marker layer "$component" start; return 0
 }
 
 # Run preflight checks unless skipped.
@@ -523,8 +588,7 @@ PUBLIC_SUBNETS=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-network.json" "Networ
 AGENT_SG=$(json_val       "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-network.json" "NetworkStack" "AgentSecurityGroupId")
 
 if [ -z "$VPC_ID" ] || [ -z "$SUBNETS" ] || [ -z "$AGENT_SG" ]; then
-  print_error "Missing VpcId / PrivateSubnetIds / AgentSecurityGroupId from wa-network.json. Aborting."
-  exit 5
+  missing_outputs_abort wa-network "Missing VpcId / PrivateSubnetIds / AgentSecurityGroupId from $OUTPUTS_DIR/wa-network.json."
 fi
 
 ################################################################################
@@ -563,8 +627,7 @@ LOCATIONS_TABLE=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-ddb.json" "DynamoDBS
 
 if [ -z "$MENU_TABLE" ] || [ -z "$CARTS_TABLE" ] || [ -z "$ORDERS_TABLE" ] \
    || [ -z "$CUSTOMERS_TABLE" ] || [ -z "$LOCATIONS_TABLE" ]; then
-  print_error "Missing one or more table names from wa-ddb.json. Aborting."
-  exit 5
+  missing_outputs_abort wa-ddb "Missing one or more DynamoDB table names from $OUTPUTS_DIR/wa-ddb.json."
 fi
 
 # ---- Layer 2b: LocationStack ------------------------------------------------
@@ -591,8 +654,7 @@ PLACE_INDEX=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-location.json" "Location
 ROUTE_CALC=$(json_val  "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-location.json" "LocationStack" "RouteCalculatorName")
 
 if [ -z "$PLACE_INDEX" ] || [ -z "$ROUTE_CALC" ]; then
-  print_error "Missing PlaceIndexName / RouteCalculatorName from wa-location.json. Aborting."
-  exit 5
+  missing_outputs_abort wa-location "Missing PlaceIndexName / RouteCalculatorName from $OUTPUTS_DIR/wa-location.json."
 fi
 
 # ---- Layer 2c: LambdaStack --------------------------------------------------
@@ -638,8 +700,7 @@ for var_name in GET_CUSTOMER_PROFILE_ARN GET_PREVIOUS_ORDERS_ARN GET_MENU_ARN \
                 GET_NEAREST_LOCATIONS_ARN FIND_LOCATION_ALONG_ROUTE_ARN \
                 GEOCODE_ADDRESS_ARN; do
   if [ -z "${!var_name}" ]; then
-    print_error "Missing Lambda ARN $var_name from wa-lambdas.json. Aborting."
-    exit 5
+    missing_outputs_abort wa-lambdas "Missing Lambda ARN $var_name from $OUTPUTS_DIR/wa-lambdas.json."
   fi
 done
 
@@ -678,8 +739,7 @@ APIGW_URL=$(json_val         "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-apigw.json" "ApiGa
 APIGW_REST_API_ID=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-apigw.json" "ApiGatewayStack" "ApiGatewayRestApiId")
 
 if [ -z "$APIGW_ID" ] || [ -z "$APIGW_URL" ] || [ -z "$APIGW_REST_API_ID" ]; then
-  print_error "Missing ApiGatewayId / ApiGatewayUrl / ApiGatewayRestApiId from wa-apigw.json. Aborting."
-  exit 5
+  missing_outputs_abort wa-apigw "Missing ApiGatewayId / ApiGatewayUrl / ApiGatewayRestApiId from $OUTPUTS_DIR/wa-apigw.json."
 fi
 
 ################################################################################
@@ -713,8 +773,7 @@ fi
 GATEWAY_URL=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-gateway.json" "AgentCoreGatewayStack" "GatewayUrl")
 
 if [ -z "$GATEWAY_URL" ]; then
-  print_error "Missing GatewayUrl from wa-gateway.json. Aborting."
-  exit 5
+  missing_outputs_abort wa-gateway "Missing GatewayUrl from $OUTPUTS_DIR/wa-gateway.json."
 fi
 
 ################################################################################
