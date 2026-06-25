@@ -395,3 +395,10 @@ function graphError(res) {
   const err = (res && res.body && res.body.error) || {};
   return `http ${res?.status}${err.code ? ` code ${err.code}` : ''}${err.message ? ` ${err.message}` : ''}`.trim();
 }
+
+// Delegate to the shared doctor (whatsapp-setup/lib/doctor.mjs). Read-only
+// end-to-end readiness check; returns { ok, checks } and never a secret value.
+export async function runDoctor(opts = {}) {
+  const d = await import(pathToFileURL(join(WHATSAPP_LIB, 'doctor.mjs')).href);
+  return d.runDoctor({ region: process.env.AWS_REGION, ...opts });
+}

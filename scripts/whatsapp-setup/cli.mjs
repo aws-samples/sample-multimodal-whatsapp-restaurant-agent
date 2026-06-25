@@ -43,6 +43,7 @@ import {
 } from './lib/pure.mjs';
 import * as graph from './lib/graph.mjs';
 import { makeClient, checkSecretsExist, putSecret, getSecret } from './lib/secrets.mjs';
+import { runDoctor } from './lib/doctor.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // repo root is two levels up from scripts/whatsapp-setup/
@@ -549,22 +550,40 @@ function reportGraph(label, res) {
 async function main() {
   log('WhatsApp Restaurant AI Host - Meta/WhatsApp setup CLI');
   log('Reminder: create the Meta app + add the WhatsApp product in the console first.\n');
-  let flow = envOr('WHATSAPP_FLOW'); // "pre" | "post"
+  let flow = envOr('WHATSAPP_FLOW'); // "pre" | "post" | "doctor"
+  if (!flow && process.argv.includes('--doctor')) flow = 'doctor';
   if (!flow) {
     if (NON_INTERACTIVE) {
-      throw new Error('WHATSAPP_FLOW (pre|post) is required in non-interactive mode.');
+      throw new Error('WHATSAPP_FLOW (pre|post|doctor) is required in non-interactive mode.');
     }
     flow = await select({
       message: 'What do you want to do?',
       choices: [
         { name: 'Pre-deploy: validate + discover + populate secrets', value: 'pre' },
         { name: 'Post-deploy: wire the webhook in Meta (Phase B)', value: 'post' },
+        { name: 'Doctor: check end-to-end readiness (read-only)', value: 'doctor' },
       ],
     });
   }
   if (flow === 'pre') await preDeploy();
   else if (flow === 'post') await postDeploy();
-  else throw new Error(`Unknown WHATSAPP_FLOW "${flow}" (expected "pre" or "post").`);
+  else if (flow === 'doctor') await doctorFlow();
+  else throw new Error(`Unknown WHATSAPP_FLOW "${flow}" (expected "pre", "post", or "doctor").`);
+}
+
+// Doctor: read-only end-to-end readiness check. Prints per-check pass/fail with
+// a remediation hint for each failure. Exit code 1 when anything fails.
+async function doctorFlow() {
+  section('Doctor: end-to-end WhatsApp readiness (read-only)');
+  const report = await runDoctor({ region: process.env.AWS_REGION, repoRoot: REPO_ROOT });
+  for (const c of report.checks) {
+    log(`${c.ok ? 'OK  ' : 'FAIL'}  ${c.label}${c.detail ? ' - ' + c.detail : ''}`);
+    if (!c.ok && c.remediation) log(`       -> ${c.remediation}`);
+  }
+  log(report.ok
+    ? '\nAll checks passed. The WhatsApp agent should verify its webhook and reply.'
+    : '\nSome checks failed. Fix the items marked -> above, then re-run with --doctor.');
+  if (!report.ok) process.exitCode = 1;
 }
 
 main().catch((err) => {

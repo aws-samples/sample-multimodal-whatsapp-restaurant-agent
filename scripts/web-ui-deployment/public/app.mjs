@@ -152,6 +152,8 @@ function connect() {
 
   es.addEventListener('identity', (e) => { if (busyKind === 'recheck') hideBusy(); renderIdentity(JSON.parse(e.data)); });
 
+  es.addEventListener('doctor', (e) => { if (busyKind === 'doctor') hideBusy(); renderDoctor(JSON.parse(e.data)); });
+
   es.onerror = () => { hideBusy(); logLine('connection lost (the installer may have exited)', 'muted'); };
 }
 
@@ -483,6 +485,32 @@ q('#gateSkip').addEventListener('click', () => { gateValueCache = {}; showBusy('
 q('#metaBtn').addEventListener('click', () => { showBusy('Loading WhatsApp configuration...', 'meta'); command({ cmd: 'metaOnly' }); });
 q('#dataBtn').addEventListener('click', () => { showBusy('Preparing demo-data form...', 'synthetic'); command({ cmd: 'syntheticOnly' }); });
 q('#recheckBtn').addEventListener('click', () => { showBusy('Checking AWS credentials...', 'recheck'); command({ cmd: 'recheckIdentity' }); });
+q('#verifyBtn').addEventListener('click', () => { showBusy('Checking WhatsApp configuration...', 'doctor'); command({ cmd: 'doctor' }); });
+q('#doctorClose').addEventListener('click', () => { q('#doctorPanel').hidden = true; });
+
+// Render the read-only doctor report (per-check pass/fail + remediation).
+function renderDoctor(report) {
+  const list = q('#doctorList');
+  list.innerHTML = '';
+  for (const c of (report.checks || [])) {
+    const li = document.createElement('li');
+    li.className = 'doctor-check ' + (c.ok ? 'dc-ok' : 'dc-fail');
+    const head = document.createElement('div');
+    head.className = 'dc-head';
+    head.textContent = `${c.ok ? 'OK' : 'FAIL'}  ${c.label}`;
+    li.appendChild(head);
+    if (c.detail) { const d = document.createElement('div'); d.className = 'dc-detail'; d.textContent = c.detail; li.appendChild(d); }
+    if (!c.ok && c.remediation) { const r = document.createElement('div'); r.className = 'dc-fix'; r.textContent = '-> ' + c.remediation; li.appendChild(r); }
+    list.appendChild(li);
+  }
+  const summary = document.createElement('li');
+  summary.className = 'doctor-check ' + (report.ok ? 'dc-ok' : 'dc-fail');
+  summary.textContent = report.ok
+    ? 'All checks passed - the agent should verify its webhook and reply.'
+    : 'Some checks failed - follow the -> hints above.';
+  list.appendChild(summary);
+  q('#doctorPanel').hidden = false;
+}
 
 // Render the AWS credential status chip (account, principal, valid/expired).
 function renderIdentity(id) {

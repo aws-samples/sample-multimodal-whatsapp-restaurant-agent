@@ -642,12 +642,36 @@ const server = http.createServer(async (req, res) => {
       else if (cmd.cmd === 'submitMeta' || cmd.cmd === 'submitData' || (cmd.cmd && cmd.cmd.startsWith('skip'))) resolveGate(cmd);
       else if (cmd.cmd === 'openUrl') openMetaUrl(cmd);
       else if (cmd.cmd === 'recheckIdentity') refreshIdentity();
+      else if (cmd.cmd === 'doctor') runDoctorCmd();
     });
     return;
   }
 
   res.writeHead(404).end('not found');
 });
+
+// Read-only "Verify configuration" (doctor) health check surfaced in the UI.
+async function runDoctorCmd() {
+  if (MOCK) {
+    const mk = (id, label, detail) => ({ id, label, ok: true, detail });
+    sse('doctor', { ok: true, checks: [
+      mk('secrets', 'Meta secrets populated', '[mock] all set'),
+      mk('phone', 'Phone Number ID set', '[mock] set'),
+      mk('webhook-url', 'Webhook endpoint deployed', '[mock] https://example/prod/webhook'),
+      mk('app-sub', 'Meta app webhook subscription', '[mock] configured'),
+      mk('waba-sub', 'WABA subscribed to the app', '[mock] subscribed'),
+      mk('handshake', 'Live webhook verify handshake', '[mock] 200 + challenge echoed'),
+    ] });
+    return;
+  }
+  try {
+    const m = await loadMeta();   // ensures whatsapp-setup deps are installed
+    const report = await m.runDoctor({ repoRoot: REPO_ROOT, region: process.env.AWS_REGION });
+    sse('doctor', report);
+  } catch (err) {
+    sse('doctor', { ok: false, checks: [{ id: 'error', label: 'Verification could not run', ok: false, detail: err.message, remediation: 'Check AWS credentials and that the webhook layer is deployed.' }] });
+  }
+}
 
 function openBrowser(url) {
   if (process.env.WAUI_NO_OPEN) return; // headless/CI: skip launching a browser

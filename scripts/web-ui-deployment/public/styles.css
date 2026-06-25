@@ -292,3 +292,14 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 /* Dependency-confirm modal list (subset deploy missing prerequisites). */
 .dep-list { margin: 6px 0 4px; padding-left: 20px; }
 .dep-list li { font: 13px var(--mono); color: var(--warn); margin: 3px 0; }
+
+/* Doctor / "Verify config" report panel. */
+.doctor-list { list-style: none; margin: 6px 0 4px; padding: 0; max-height: 56vh; overflow-y: auto; }
+.doctor-check { border: 1px solid var(--glass-brd); border-radius: 8px; padding: 9px 11px; margin: 7px 0; font-size: 13px; }
+.doctor-check.dc-ok { border-left: 3px solid var(--ok); }
+.doctor-check.dc-fail { border-left: 3px solid var(--fail); }
+.doctor-check .dc-head { font-weight: 600; color: var(--txt-strong); }
+.doctor-check.dc-ok .dc-head { color: var(--ok); }
+.doctor-check.dc-fail .dc-head { color: var(--fail); }
+.doctor-check .dc-detail { color: var(--txt-dim); margin-top: 3px; font: 12px var(--mono); word-break: break-word; }
+.doctor-check .dc-fix { color: var(--warn); margin-top: 4px; font-size: 12.5px; }

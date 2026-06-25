@@ -19,6 +19,7 @@
       <span id="mockBadge" class="badge" hidden>mock mode</span>
       <button id="metaBtn">Configure WhatsApp</button>
       <button id="dataBtn">Seed data</button>
+      <button id="verifyBtn" title="Read-only end-to-end readiness check">Verify config</button>
       <button id="optionsBtn">Options</button>
       <button id="startBtn" class="primary">Start deployment</button>
       <button id="exitBtn">Exit</button>
@@ -106,6 +107,17 @@
       <div class="gate-actions">
         <button type="button" id="depCancel">Cancel</button>
         <button type="button" id="depAdd" class="primary">Add dependencies &amp; deploy</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="doctorPanel" class="gate-overlay" hidden>
+    <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="doctorTitle">
+      <h2 id="doctorTitle" class="gate-title">Configuration check</h2>
+      <p class="gate-help">A read-only end-to-end check of whether the WhatsApp agent can verify its webhook and reply. Nothing is changed and no secret value is shown.</p>
+      <ul id="doctorList" class="doctor-list"></ul>
+      <div class="gate-actions">
+        <button type="button" id="doctorClose" class="primary">Close</button>
       </div>
     </div>
   </div>
