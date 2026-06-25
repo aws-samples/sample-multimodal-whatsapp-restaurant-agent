@@ -643,6 +643,7 @@ const server = http.createServer(async (req, res) => {
       else if (cmd.cmd === 'openUrl') openMetaUrl(cmd);
       else if (cmd.cmd === 'recheckIdentity') refreshIdentity();
       else if (cmd.cmd === 'doctor') runDoctorCmd();
+      else if (cmd.cmd === 'metaSystemUser') runSystemUserOnly();
     });
     return;
   }
@@ -670,6 +671,48 @@ async function runDoctorCmd() {
     sse('doctor', report);
   } catch (err) {
     sse('doctor', { ok: false, checks: [{ id: 'error', label: 'Verification could not run', ok: false, detail: err.message, remediation: 'Check AWS credentials and that the webhook layer is deployed.' }] });
+  }
+}
+
+// EXPERIMENTAL: System User + long-lived token automation gate. Opens a form for
+// the one-time admin authorization, runs the automation, and stores the minted
+// token. Loops on a recoverable error (secret fields are retained client-side);
+// the operator can skip and paste an Access Token manually instead.
+async function runSystemUserOnly() {
+  if (deploying) return;
+  if (!(await ensureCredentials())) return;
+  deploying = true;
+  flowAborted = false;
+  try {
+    const m = await loadMeta();
+    let prefill = {};
+    try { prefill = await m.loadMetaConfig(REPO_ROOT); } catch { /* best-effort */ }
+    let extra = {};
+    for (;;) {
+      sse('gate', { ...m.systemUserGate(prefill), ...extra });
+      const reply = await awaitGate();
+      if (!reply || (reply.cmd && reply.cmd.startsWith('skip')) || flowAborted) { metaLog('Skipped System User automation.'); break; }
+      if (MOCK) { metaLog('[mock] created System User + minted long-lived token + stored it.'); sse('secretStatus', { populated: true }); break; }
+      let res;
+      try {
+        res = await m.runSystemUser(reply.values || {}, { region: process.env.AWS_REGION, repoRoot: REPO_ROOT, onLog: metaLog });
+      } catch (err) {
+        res = { ok: false, reason: err.message };
+      }
+      if (res.ok) {
+        metaLog(`System User ready (${res.created ? 'created' : 'reused'}); long-lived token stored as the Access Token.`);
+        sse('secretStatus', { populated: true });
+        break;
+      }
+      extra = { error: res.reason || 'unknown error' };
+      metaLog(`System User automation needs attention: ${extra.error}`);
+    }
+    sse('done', { ok: true, summary: 'System User step finished.' });
+  } catch (err) {
+    sse('log', { line: `System User error: ${err.message}` });
+    sse('done', { ok: false, summary: 'System User step stopped on an error.' });
+  } finally {
+    deploying = false;
   }
 }
 

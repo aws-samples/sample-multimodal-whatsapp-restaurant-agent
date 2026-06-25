@@ -483,6 +483,7 @@ function hideGate() { q('#gate').hidden = true; currentGate = null; }
 q('#gateSubmit').addEventListener('click', submitGate);
 q('#gateSkip').addEventListener('click', () => { gateValueCache = {}; showBusy('Finishing up...', 'skip'); command({ cmd: 'skip' }); hideGate(); });
 q('#metaBtn').addEventListener('click', () => { showBusy('Loading WhatsApp configuration...', 'meta'); command({ cmd: 'metaOnly' }); });
+q('#sysUserBtn').addEventListener('click', () => { showBusy('Preparing System User form...', 'meta'); command({ cmd: 'metaSystemUser' }); });
 q('#dataBtn').addEventListener('click', () => { showBusy('Preparing demo-data form...', 'synthetic'); command({ cmd: 'syntheticOnly' }); });
 q('#recheckBtn').addEventListener('click', () => { showBusy('Checking AWS credentials...', 'recheck'); command({ cmd: 'recheckIdentity' }); });
 q('#verifyBtn').addEventListener('click', () => { showBusy('Checking WhatsApp configuration...', 'doctor'); command({ cmd: 'doctor' }); });

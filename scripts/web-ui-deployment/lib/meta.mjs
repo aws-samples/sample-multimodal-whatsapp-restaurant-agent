@@ -420,3 +420,46 @@ export async function runDoctor(opts = {}) {
   const d = await import(pathToFileURL(join(WHATSAPP_LIB, 'doctor.mjs')).href);
   return d.runDoctor({ region: process.env.AWS_REGION, ...opts });
 }
+
+// The System User gate (EXPERIMENTAL automation). Collects the one-time admin
+// authorization needed to create a System User and mint a long-lived token, so
+// the operator does not do the System User console dance. Always optional - the
+// pre-deploy Access Token field remains the manual fallback.
+export function systemUserGate(prefill = {}) {
+  const def = (k, fb = '') => (prefill[k] != null && String(prefill[k]).trim() !== '' ? String(prefill[k]) : fb);
+  return {
+    kind: 'meta-systemuser',
+    title: 'Create a long-lived System User token (optional)',
+    help:
+      'EXPERIMENTAL. This automates the Meta "System User" steps to mint a non-expiring Access Token, so ' +
+      'your deployment keeps working without 24-hour token refreshes. It needs a one-time ADMIN authorization. ' +
+      'If anything is not permitted, skip this and paste an Access Token on the previous step instead. ' +
+      'Note: the app must be assigned to the System User in Business Settings, and business verification / App ' +
+      'Review may be required by Meta - those are console-only.',
+    consoleUrls: [],
+    fields: [
+      { name: 'adminToken', label: 'Admin access token', type: 'password', secret: true, required: true,
+        help: 'A token for a Business admin (or admin System User) with business_management. Used once to create the System User and mint the token; never stored.' },
+      { name: 'businessId', label: 'Business (portfolio) ID', type: 'text', required: true, default: def('businessId'),
+        help: 'Business Settings -> Business info -> Business portfolio ID.' },
+      { name: 'appId', label: 'App ID', type: 'text', required: true, default: def('appId'),
+        help: 'The Meta App ID the token will be minted for.' },
+      { name: 'appSecret', label: 'App Secret', type: 'password', secret: true, required: true,
+        help: 'Used to compute appsecret_proof and is stored as the deployment App Secret.' },
+      { name: 'wabaId', label: 'WABA ID', type: 'text', required: true, default: def('wabaId'),
+        help: 'The WhatsApp Business Account the System User will be assigned to.' },
+      { name: 'systemUserName', label: 'System User name', type: 'text', required: false, default: def('systemUserName', 'qsr-wa-system-user'),
+        help: 'A name for the System User (reused if it already exists). Default: qsr-wa-system-user.' },
+      { name: 'deploymentPrefix', label: 'Deployment prefix', type: 'text', required: false, default: def('deploymentPrefix', DEFAULT_PREFIX),
+        help: 'Resource-name prefix; must match the deploy (default qsr-wa).' },
+    ],
+  };
+}
+
+// EXPERIMENTAL: create/reuse a System User, assign it to the WABA, mint a
+// long-lived token, and store it as the deployment Access Token. Delegates to
+// the shared whatsapp-setup/lib/systemuser.mjs. Never returns or logs the token.
+export async function runSystemUser(values, opts = {}) {
+  const s = await import(pathToFileURL(join(WHATSAPP_LIB, 'systemuser.mjs')).href);
+  return s.runSystemUser(values, { region: process.env.AWS_REGION, repoRoot: opts.repoRoot, ...opts });
+}

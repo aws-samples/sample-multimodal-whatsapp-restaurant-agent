@@ -44,6 +44,7 @@ import {
 import * as graph from './lib/graph.mjs';
 import { makeClient, checkSecretsExist, putSecret, getSecret } from './lib/secrets.mjs';
 import { runDoctor } from './lib/doctor.mjs';
+import { runSystemUser } from './lib/systemuser.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // repo root is two levels up from scripts/whatsapp-setup/
@@ -550,11 +551,12 @@ function reportGraph(label, res) {
 async function main() {
   log('WhatsApp Restaurant AI Host - Meta/WhatsApp setup CLI');
   log('Reminder: create the Meta app + add the WhatsApp product in the console first.\n');
-  let flow = envOr('WHATSAPP_FLOW'); // "pre" | "post" | "doctor"
+  let flow = envOr('WHATSAPP_FLOW'); // "pre" | "post" | "doctor" | "systemuser"
   if (!flow && process.argv.includes('--doctor')) flow = 'doctor';
+  if (!flow && process.argv.includes('--system-user')) flow = 'systemuser';
   if (!flow) {
     if (NON_INTERACTIVE) {
-      throw new Error('WHATSAPP_FLOW (pre|post|doctor) is required in non-interactive mode.');
+      throw new Error('WHATSAPP_FLOW (pre|post|doctor|systemuser) is required in non-interactive mode.');
     }
     flow = await select({
       message: 'What do you want to do?',
@@ -562,13 +564,38 @@ async function main() {
         { name: 'Pre-deploy: validate + discover + populate secrets', value: 'pre' },
         { name: 'Post-deploy: wire the webhook in Meta (Phase B)', value: 'post' },
         { name: 'Doctor: check end-to-end readiness (read-only)', value: 'doctor' },
+        { name: 'System User: mint a long-lived token (experimental)', value: 'systemuser' },
       ],
     });
   }
   if (flow === 'pre') await preDeploy();
   else if (flow === 'post') await postDeploy();
   else if (flow === 'doctor') await doctorFlow();
-  else throw new Error(`Unknown WHATSAPP_FLOW "${flow}" (expected "pre", "post", or "doctor").`);
+  else if (flow === 'systemuser') await systemUserFlow();
+  else throw new Error(`Unknown WHATSAPP_FLOW "${flow}" (expected "pre", "post", "doctor", or "systemuser").`);
+}
+
+// EXPERIMENTAL: create a Meta System User + mint a non-expiring token, stored as
+// the deployment Access Token. One-time admin authorization; degrades to manual
+// paste (the pre-deploy flow) on any permission/contract problem.
+async function systemUserFlow() {
+  section('System User automation (EXPERIMENTAL)');
+  log('Creates a Meta System User and mints a non-expiring token, then stores it as the deployment Access Token.');
+  log('Needs a one-time admin authorization. If anything is not permitted, paste an Access Token via the pre-deploy flow instead.\n');
+  const ask = async (envName, prompter) => envOr(envName) || (NON_INTERACTIVE ? '' : await prompter());
+  const adminToken = await ask('WHATSAPP_ADMIN_TOKEN', () => password({ message: 'Admin access token (business_management):' }));
+  const businessId = await ask('WHATSAPP_BUSINESS_ID', () => input({ message: 'Business (portfolio) ID:' }));
+  const appId = await ask('WHATSAPP_APP_ID', () => input({ message: 'App ID:' }));
+  const appSecret = await ask('WHATSAPP_APP_SECRET', () => password({ message: 'App Secret:' }));
+  const wabaId = await ask('WHATSAPP_WABA_ID', () => input({ message: 'WABA ID:' }));
+  const systemUserName = await ask('WHATSAPP_SYSTEM_USER_NAME', () => input({ message: 'System User name:', default: 'qsr-wa-system-user' }));
+  const deploymentPrefix = envOr('WHATSAPP_DEPLOYMENT_PREFIX') || 'qsr-wa';
+  const res = await runSystemUser(
+    { adminToken, businessId, appId, appSecret, wabaId, systemUserName, deploymentPrefix },
+    { region: process.env.AWS_REGION, repoRoot: REPO_ROOT, onLog: log },
+  );
+  if (res.ok) log(`\nDone. System User ${res.created ? 'created' : 'reused'}; long-lived token stored (value never shown).`);
+  else { log(`\nCould not complete: ${res.reason}`); process.exitCode = 1; }
 }
 
 // Doctor: read-only end-to-end readiness check. Prints per-check pass/fail with

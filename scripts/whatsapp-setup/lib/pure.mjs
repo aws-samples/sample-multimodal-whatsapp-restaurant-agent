@@ -9,7 +9,7 @@
 // returned, never printed. The `redact` helper exists so callers can show a
 // safe hint without leaking the value (R11.6, R1.6).
 
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHmac } from 'node:crypto';
 
 // The deployment prefix pattern shared by every CDK app in this repo
 // (^[a-z][a-z0-9-]{1,19}$). Re-validated here so the CLI fails fast before it
@@ -153,6 +153,13 @@ export function renderConfigEnv({ prefix, phoneNumberId, wabaId, appId }) {
 // only ever sent in the Authorization header, never logged.
 export function appAccessToken(appId, appSecret) {
   return `${appId}|${appSecret}`;
+}
+
+// Compute appsecret_proof for a Graph call: HMAC-SHA256 of the access token used
+// on the call, keyed by the app secret, hex-encoded. Required for server-side
+// calls when the app enforces proof (and for System User token generation).
+export function appSecretProof(accessToken, appSecret) {
+  return createHmac('sha256', String(appSecret)).update(String(accessToken)).digest('hex');
 }
 
 // Build the Meta dashboard URLs that help an operator find each value, given

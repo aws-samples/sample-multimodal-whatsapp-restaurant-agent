@@ -144,3 +144,40 @@ export function getPhoneNumberSettings(token, phoneNumberId) {
 export function setCallingSettings(token, phoneNumberId, calling = { status: 'ENABLED' }) {
   return graphRequest('POST', `/${phoneNumberId}/settings`, { token, json: { calling } });
 }
+
+// ---- System User automation (EXPERIMENTAL) --------------------------------
+// These wrap the Business Management endpoints for creating a System User and
+// minting a long-lived (non-expiring) token. Field names flagged by research as
+// version-sensitive: create uses `system_user_role`; token-mint uses
+// `business_app` (NOT app_id) and omits the expiry flag for a permanent token.
+// The caller (meta.mjs runSystemUser) degrades to manual token paste on any error.
+
+// GET /{business-id}/system_users - list for idempotent reuse by name.
+export function getSystemUsers(token, businessId) {
+  return graphRequest('GET', `/${businessId}/system_users`, { token, query: { fields: 'id,name,role' } });
+}
+
+// POST /{business-id}/system_users - create a System User. Needs business_management.
+export function createSystemUser(token, businessId, name, role = 'ADMIN') {
+  return graphRequest('POST', `/${businessId}/system_users`, { token, form: { name, system_user_role: role } });
+}
+
+// GET /{waba-id}/assigned_users - confirm asset assignment.
+export function getAssignedUsers(token, wabaId) {
+  return graphRequest('GET', `/${wabaId}/assigned_users`, { token, query: { fields: 'id,name,tasks' } });
+}
+
+// POST /{waba-id}/assigned_users - assign the System User to the WABA with tasks.
+export function assignSystemUserToWaba(token, wabaId, systemUserId, tasks = ['MANAGE']) {
+  return graphRequest('POST', `/${wabaId}/assigned_users`, { token, form: { user: systemUserId, tasks: JSON.stringify(tasks) } });
+}
+
+// POST /{system-user-id}/access_tokens - mint a long-lived (non-expiring) token
+// scoped to WhatsApp. `business_app` is the app id; `scope` is comma-separated;
+// `appsecret_proof` is required server-side. Omitting the expiry flag yields a
+// permanent System User token. Returns body.access_token.
+export function createSystemUserToken(token, systemUserId, { appId, scopes, appsecretProof }) {
+  const form = { business_app: appId, scope: (scopes || []).join(',') };
+  if (appsecretProof) form.appsecret_proof = appsecretProof;
+  return graphRequest('POST', `/${systemUserId}/access_tokens`, { token, form });
+}
