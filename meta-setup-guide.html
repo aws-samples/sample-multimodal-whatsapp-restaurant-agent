@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WhatsApp (Meta) Setup Guide - Restaurant AI Host</title>
+<style>
+  :root {
+    --bg: #0a0f1a; --card: #121a2b; --ink: #e6edf7; --dim: #9fb0c9;
+    --accent: #5aa4ff; --ok: #34d399; --warn: #ff9f43; --line: rgba(120,170,255,.18);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--sans); }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 22px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 36px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+  h3 { font-size: 15.5px; margin: 18px 0 6px; color: var(--accent); }
+  p, li { color: var(--ink); }
+  .lead { color: var(--dim); font-size: 15px; }
+  code, .val { font-family: var(--mono); font-size: 13px; background: rgba(90,164,255,.12); padding: 1px 6px; border-radius: 5px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin: 14px 0; }
+  .step { display: flex; gap: 14px; align-items: flex-start; }
+  .num { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #04122b;
+         font-weight: 700; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .step-body { flex: 1; }
+  .where { color: var(--dim); font-size: 13.5px; margin: 4px 0; }
+  .where b { color: var(--ink); }
+  .pill { display: inline-block; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .04em;
+          padding: 2px 8px; border-radius: 999px; margin-left: 8px; }
+  .pill.secret { background: rgba(255,159,67,.16); color: var(--warn); }
+  .pill.public { background: rgba(52,211,153,.16); color: var(--ok); }
+  .pill.invent { background: rgba(90,164,255,.16); color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; }
+  .note { border-left: 3px solid var(--accent); padding: 8px 14px; margin: 12px 0; background: rgba(90,164,255,.07); border-radius: 0 8px 8px 0; }
+  .warn { border-left-color: var(--warn); background: rgba(255,159,67,.08); }
+  .ok { border-left-color: var(--ok); background: rgba(52,211,153,.08); }
+  ul.check { list-style: none; padding-left: 0; }
+  ul.check li { padding-left: 26px; position: relative; margin: 6px 0; }
+  ul.check li::before { content: "\2610"; position: absolute; left: 0; color: var(--accent); font-size: 18px; }
+  a { color: var(--accent); }
+  .small { font-size: 13px; color: var(--dim); }
+  kbd { font-family: var(--mono); font-size: 12px; background: #03060c; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>WhatsApp (Meta) Setup Guide</h1>
+  <p class="lead">Everything you need to collect from the Meta (Facebook) console to deploy and run the
+  Restaurant AI Host. Work top to bottom. Values you collect here are entered once in the installer
+  (the guided web UI or the <code>whatsapp-setup</code> CLI); the installer auto-discovers what it can
+  and wires the webhook for you.</p>
+
+  <div class="note">
+    <b>Two things the installer does for you</b>, so you do not have to hand-copy them:
+    once you provide a business-scoped <b>Access Token</b> + <b>Business ID</b>, it discovers your
+    <b>WABA ID</b> and <b>Phone Number ID</b> and lets you pick from a list; and after the deploy it
+    sets the webhook callback URL, Verify Token, and field subscription in Meta automatically.
+  </div>
+
+  <h2>What you will end up with</h2>
+  <table>
+    <tr><th>Value</th><th>Type</th><th>Where it is used</th></tr>
+    <tr><td><code>App ID</code></td><td><span class="pill public">public</span></td><td>Identifies your Meta app.</td></tr>
+    <tr><td><code>App Secret</code></td><td><span class="pill secret">secret</span></td><td>Verifies inbound webhooks really came from Meta (signature check).</td></tr>
+    <tr><td><code>Access Token</code></td><td><span class="pill secret">secret</span></td><td>Sends WhatsApp replies and calls the Graph API.</td></tr>
+    <tr><td><code>Business (portfolio) ID</code></td><td><span class="pill public">public</span></td><td>Lets the installer auto-discover your WABA.</td></tr>
+    <tr><td><code>WABA ID</code></td><td><span class="pill public">public</span></td><td>WhatsApp Business Account that owns the number (auto-discovered).</td></tr>
+    <tr><td><code>Phone Number ID</code></td><td><span class="pill public">public</span></td><td>The number replies are sent from (auto-discovered).</td></tr>
+    <tr><td><code>Verify Token</code></td><td><span class="pill invent">you invent it</span></td><td>A shared secret for the webhook handshake. Not from Meta - you make it up.</td></tr>
+  </table>
+
+  <h2>Prerequisite: a Meta app with the WhatsApp product</h2>
+  <div class="card">
+    <div class="step">
+      <div class="num">0</div>
+      <div class="step-body">
+        <p>No API can create the app for you - this is a one-time manual bootstrap.</p>
+        <ol>
+          <li>Go to <a href="https://developers.facebook.com/apps/">developers.facebook.com/apps</a> and
+              <b>Create App</b> (type: <b>Business</b>).</li>
+          <li>In the app, <b>Add Product &rarr; WhatsApp &rarr; Set up</b>.</li>
+          <li>Make sure the app is linked to a <b>Business portfolio</b> (Meta Business Manager).</li>
+        </ol>
+        <p class="small">You also need a verified Business and a WhatsApp Business Account with a phone
+        number added. The temporary test number Meta provides works for first tests.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2>Step-by-step: collect each value</h2>
+
+  <div class="card">
+    <div class="step">
+      <div class="num">1</div>
+      <div class="step-body">
+        <h3>App ID <span class="pill public">public</span></h3>
+        <p>A numeric id that identifies your app.</p>
+        <p class="where"><b>Where:</b> App Dashboard &rarr; <b>App settings &rarr; Basic</b> &rarr; "App ID".</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="step">
+      <div class="num">2</div>
+      <div class="step-body">
+        <h3>App Secret <span class="pill secret">secret</span></h3>
+        <p>Used by the webhook to confirm each incoming event was signed by Meta. This is <b>not</b> the
+        access token - it is a different value with a different job.</p>
+        <p class="where"><b>Where:</b> App settings &rarr; <b>Basic</b> &rarr; "App Secret" &rarr; <b>Show</b>.</p>
+        <div class="note warn">Treat this like a password. The installer stores it in AWS Secrets Manager and never prints it.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="step">
+      <div class="num">3</div>
+      <div class="step-body">
+        <h3>Access Token <span class="pill secret">secret</span></h3>
+        <p>Authorizes sending messages and calling the Graph API. You have two options:</p>
+        <h3 style="margin-top:10px">Option A - Temporary token (fastest, for a first test)</h3>
+        <p class="where"><b>Where:</b> <b>WhatsApp &rarr; API Setup</b> &rarr; "Temporary access token". It expires in 24 hours.</p>
+        <h3 style="margin-top:10px">Option B - System User token (recommended, long-lived)</h3>
+        <p>A System User token does not expire, so the deployment keeps working. The installer can
+        automate creating this for you if you provide an admin-authorized token once; otherwise:</p>
+        <ol>
+          <li>Open <a href="https://business.facebook.com/settings/system-users">Business Settings &rarr; Users &rarr; System users</a>.</li>
+          <li><b>Add</b> a system user (role: Admin or Employee).</li>
+          <li><b>Assign assets</b> &rarr; your app and your WhatsApp Business Account (full control / manage).</li>
+          <li><b>Generate new token</b> &rarr; select your app &rarr; scopes
+              <code>whatsapp_business_messaging</code> and <code>whatsapp_business_management</code>
+              &rarr; set expiration to <b>Never</b>.</li>
+          <li>Copy the token (shown once).</li>
+        </ol>
+        <div class="note">To list your WABA / phone number automatically, the token needs
+        <code>whatsapp_business_management</code>. An App ID + App Secret alone is <b>not</b> enough for discovery.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="step">
+      <div class="num">4</div>
+      <div class="step-body">
+        <h3>Business (portfolio) ID <span class="pill public">public</span></h3>
+        <p>Identifies your Business in Meta Business Manager. Give this to the installer and it will
+        auto-discover the WABA and phone number under it (you pick from a list if there is more than one).</p>
+        <p class="where"><b>Where:</b> <a href="https://business.facebook.com/settings/info">Business Settings &rarr; Business info</a> &rarr; "Business portfolio ID".</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="step">
+      <div class="num">5</div>
+      <div class="step-body">
+        <h3>WABA ID &amp; Phone Number ID <span class="pill public">auto-discovered</span></h3>
+        <p>You normally do <b>not</b> need to copy these by hand - the installer discovers them from your
+        Access Token + Business ID and lets you select. If you prefer to enter them manually:</p>
+        <p class="where"><b>Where:</b> <b>WhatsApp &rarr; API Setup</b> shows the <b>Phone number ID</b> and the
+        <b>WhatsApp Business Account ID</b> for the selected number.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="step">
+      <div class="num">6</div>
+      <div class="step-body">
+        <h3>Verify Token <span class="pill invent">you invent it</span></h3>
+        <p>This is the one value that does <b>not</b> come from Meta. It is just a shared secret for the
+        webhook handshake: Meta sends it to your webhook, and your webhook checks it matches. Pick any
+        random string (e.g. <span class="val">my-verify-7f3a9c2b</span>), or leave it blank in the installer
+        to have one generated for you. The same value must end up both in your deployment and in Meta's
+        webhook config - the installer handles both sides.</p>
+      </div>
+    </div>
+  </div>
+
+  <h2>After the deploy: wiring the webhook</h2>
+  <div class="note ok">
+    <b>The installer does this for you</b> in its post-deploy step (or the <code>whatsapp-setup</code>
+    "Post-deploy" flow): it sets the callback URL + Verify Token, subscribes to the <code>messages</code>
+    field, and subscribes your WABA. The steps below are only for reference or manual setup.
+  </div>
+  <div class="card">
+    <ol>
+      <li>After deploying, the installer shows your <b>webhook URL</b>
+          (like <span class="val">https://abc123.execute-api.us-east-1.amazonaws.com/prod/webhook</span>).</li>
+      <li>In the Meta app: <b>WhatsApp &rarr; Configuration &rarr; Webhook &rarr; Edit</b>.</li>
+      <li>Paste the <b>Callback URL</b> and your <b>Verify Token</b>, then <b>Verify and save</b>.</li>
+      <li>Under <b>Webhook fields</b>, subscribe to <b>messages</b> (and <b>calls</b> if you want voice).</li>
+    </ol>
+    <div class="note warn">If "Verify and save" fails, the Verify Token in Meta does not match the one stored
+    in your deployment. Re-run the installer's WhatsApp step so both sides agree, then verify again.</div>
+  </div>
+
+  <h2>Quick checklist for tomorrow</h2>
+  <div class="card">
+    <ul class="check">
+      <li>Meta app created, WhatsApp product added, linked to a Business portfolio</li>
+      <li>App ID copied</li>
+      <li>App Secret copied (kept private)</li>
+      <li>Access Token ready (temporary for a quick test, or a System User token to last)</li>
+      <li>Business (portfolio) ID copied</li>
+      <li>(Optional) WABA ID + Phone Number ID - or let the installer discover them</li>
+      <li>Verify Token chosen (or let the installer generate one)</li>
+      <li>Run the deploy, then let the installer wire the webhook and subscribe <code>messages</code></li>
+      <li>Send a WhatsApp message to the number - the agent should reply</li>
+    </ul>
+  </div>
+
+  <p class="small">Generated for the Restaurant AI Host deploy. No real credentials are stored in this file -
+  fill them into the installer at run time. The installer keeps every secret in AWS Secrets Manager and
+  never prints it.</p>
+
+</div>
+</body>
+</html>
