@@ -88,12 +88,24 @@
   <div id="options" class="gate-overlay" hidden>
     <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="optionsTitle">
       <h2 id="optionsTitle" class="gate-title">Deploy options</h2>
-      <p class="gate-help">Choose which layers to deploy and any options. By default every layer deploys in order; deselect layers to deploy a subset (dependencies are your responsibility).</p>
+      <p class="gate-help">Choose which layers to deploy and any options. By default every layer deploys in order; deselect layers to deploy a subset. If your selection is missing a required dependency, the installer will flag it before deploying.</p>
       <label class="gate-check"><input type="checkbox" id="optSkipKitchen" /> Skip the demo kitchen simulator (the real order-status notifier still deploys)</label>
       <div id="optLayers" class="opt-layers"></div>
       <div class="gate-actions">
         <button type="button" id="optionsCancel">Cancel</button>
         <button type="button" id="optionsStart" class="primary">Deploy selected</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="depConfirm" class="gate-overlay" hidden>
+    <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="depTitle">
+      <h2 id="depTitle" class="gate-title">Missing dependencies</h2>
+      <p class="gate-help">Your selection depends on these layers, which are not selected or deployed yet. Deploying without them will fail. Add them to the deploy (in dependency order), or cancel.</p>
+      <ul id="depList" class="dep-list"></ul>
+      <div class="gate-actions">
+        <button type="button" id="depCancel">Cancel</button>
+        <button type="button" id="depAdd" class="primary">Add dependencies &amp; deploy</button>
       </div>
     </div>
   </div>

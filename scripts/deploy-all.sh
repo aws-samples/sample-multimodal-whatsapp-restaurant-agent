@@ -73,6 +73,9 @@ FORCE_DEPLOY=false
 SKIP_PREFLIGHT=false
 NO_ROLLBACK=false
 ONLY_COMPONENT=""      # empty = deploy all layers; when set, run ONLY that one
+WITH_DEPS=false        # --with-deps: with --only, also deploy missing required deps
+ONLY_DEPS=""           # (internal) extra dep keys to deploy alongside --only target
+CLOSURE_SET=""         # (internal) the --only target's full dependency closure
 LOW_STORAGE_MODE=false # --low-storage-mode: wipe sibling node_modules before each npm install
 ASSUME_YES=false       # --yes / --non-interactive: never block on a prompt
 # --skip-kitchen-simulator: the order-notifier (Task 27) ALWAYS deploys the
@@ -95,6 +98,7 @@ while [[ $# -gt 0 ]]; do
     --skip-preflight)   SKIP_PREFLIGHT=true; shift ;;
     --no-rollback)      NO_ROLLBACK=true;    shift ;;
     --only)             ONLY_COMPONENT="$2"; shift 2 ;;
+    --with-deps)        WITH_DEPS=true;      shift ;;
     --low-storage-mode) LOW_STORAGE_MODE=true; shift ;;
     --skip-kitchen-simulator) SKIP_KITCHEN_SIM=true; shift ;;
     --yes|--non-interactive) ASSUME_YES=true; shift ;;
@@ -144,6 +148,12 @@ Options:
                                 wa-runtime-call, wa-runtime-voicenotes,
                                 wa-runtime-chat, wa-webhook, wa-order-notifier
                               Example: --only wa-memory
+  --with-deps                 With --only, also deploy any REQUIRED dependency
+                              layers that are not yet deployed (in dependency
+                              order), instead of failing. Without this flag, a
+                              non-interactive run that is missing a dependency
+                              fails fast with an explanation; an interactive run
+                              prompts. Dependencies are read from layers.json.
   --yes, --non-interactive    Never block on an interactive prompt. Use in CI
                               or any piped/non-TTY run.
   --interactive-web-ui        Launch a local, browser-based installer (loopback
@@ -428,6 +438,17 @@ missing_outputs_abort() {
   exit 5
 }
 
+# dep_satisfied <component> - 0 if the layer is deployed AND its outputs are
+# present or recoverable (its stack exists, so drift self-heal can re-hydrate
+# them). Used by the subset-deploy dependency precheck.
+dep_satisfied() {
+  local c=$1
+  [ "$(is_deployed "$c")" = "true" ] || return 1
+  outputs_present "$WORKSPACE_ROOT/$OUTPUTS_DIR/$c.json" && return 0
+  local s; s="$(layer_stack "$c")"
+  [ -n "$s" ] && [ -n "$(stack_exists "$s" "$HEAL_REGION")" ]
+}
+
 # should_deploy <component> - returns 0 when this layer should run, 1 when it
 # should be skipped. Encapsulates the three gates:
 #   1. --only <X> - run X, skip everything else.
@@ -438,9 +459,19 @@ missing_outputs_abort() {
 should_deploy() {
   local component="$1"
   if [ -n "$ONLY_COMPONENT" ]; then
-    if [ "$ONLY_COMPONENT" = "$component" ]; then
+    if [ "$ONLY_COMPONENT" = "$component" ] || printf ' %s ' "$ONLY_DEPS" | grep -q " $component "; then
       CURRENT_LAYER="$component"; waui_marker layer "$component" start; return 0
     fi
+    # Skipped in a subset deploy. If this layer is in the target's dependency
+    # closure, make sure its outputs exist (re-hydrate from the live stack) so
+    # the target's downstream reads succeed even on a fresh checkout.
+    if printf ' %s ' "$CLOSURE_SET" | grep -q " $component "; then
+      local _s; _s="$(layer_stack "$component")"
+      if [ -n "$_s" ] && [ -n "$(stack_exists "$_s" "$HEAL_REGION")" ]; then
+        ensure_layer_outputs "$component" "$_s" >/dev/null 2>&1 || true
+      fi
+    fi
+    waui_marker layer "$component" skipped
     return 1
   fi
   if [ "$FORCE_DEPLOY" = true ] || [ "$(is_deployed "$component")" != "true" ]; then
@@ -473,6 +504,42 @@ fi
 
 init_state
 mkdir -p "$WORKSPACE_ROOT/$OUTPUTS_DIR"
+
+# Dependency precheck for subset (--only) deploys: confirm the target's required
+# dependencies are deployed (or deploy them too with --with-deps / on confirm),
+# so a subset run never aborts midway on a missing upstream output.
+if [ -n "$ONLY_COMPONENT" ]; then
+  CLOSURE_SET="$(node "$DEPS_CLI" closure "$ONLY_COMPONENT" 2>/dev/null | tr '\n' ' ')"
+  MISSING_DEPS=""
+  for _c in $CLOSURE_SET; do
+    [ "$_c" = "$ONLY_COMPONENT" ] && continue
+    dep_satisfied "$_c" || MISSING_DEPS="$MISSING_DEPS $_c"
+  done
+  MISSING_DEPS="$(echo "$MISSING_DEPS" | xargs)"
+  if [ -n "$MISSING_DEPS" ]; then
+    print_warning "'$ONLY_COMPONENT' depends on layer(s) that are not deployed yet:"
+    for _c in $MISSING_DEPS; do print_info "    - $_c"; done
+    if [ "$WITH_DEPS" = true ]; then
+      print_info "Deploying the missing dependencies first, in order (--with-deps)."
+      ONLY_DEPS="$MISSING_DEPS"
+    elif [ "$ASSUME_YES" = true ]; then
+      print_error "Refusing to deploy '$ONLY_COMPONENT' without its dependencies."
+      print_error "Re-run with --with-deps to deploy them too:"
+      print_error "  ./scripts/deploy-all.sh --only $ONLY_COMPONENT --with-deps"
+      exit 2
+    elif [ -t 0 ]; then
+      printf "Deploy these dependencies first, then '%s'? [y/N] " "$ONLY_COMPONENT"
+      read -r _ans
+      case "$_ans" in
+        [yY]|[yY][eE][sS]) ONLY_DEPS="$MISSING_DEPS" ;;
+        *) print_info "Cancelled. No changes made."; exit 0 ;;
+      esac
+    else
+      print_error "Not a TTY and --with-deps not set; refusing to deploy '$ONLY_COMPONENT' without its dependencies."
+      exit 2
+    fi
+  fi
+fi
 
 # Handle fresh mode
 if [ "$MODE" = "fresh" ]; then

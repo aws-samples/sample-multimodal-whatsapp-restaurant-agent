@@ -64,6 +64,7 @@ function connect() {
     if (mock) q('#mockBadge').hidden = false;
     if (data.identity) renderIdentity(data.identity);
     latestLayers = layers || [];
+    deployStates = states || {};
     setStep(data.identity && !data.identity.ok ? 'credentials' : 'deploy');
     renderLayers(layers, (layer) => { selectedLayerKey = layer.key; q('#applyLayerBtn').hidden = false; showDetail(layer); });
     initTopology(document.getElementById('archSvg')).then((ok) => {
@@ -172,6 +173,32 @@ const CONSOLE_LABELS = {
 let currentGate = null;
 let selectedLayerKey = null;
 let latestLayers = [];
+let deployStates = {};
+
+// ---- Client-side dependency closure (mirrors lib/deps.mjs for the UI) ----
+function depGraph() {
+  const g = {};
+  for (const l of latestLayers) g[l.key] = Array.isArray(l.dependsOn) ? l.dependsOn : [];
+  return g;
+}
+// Ordered closure (deploy order) of the selected keys + their required deps.
+function closureFor(selected) {
+  const g = depGraph();
+  const seen = new Set();
+  const visit = (k) => { if (seen.has(k)) return; seen.add(k); for (const d of (g[k] || [])) visit(d); };
+  for (const k of selected) visit(k);
+  return latestLayers.map((l) => l.key).filter((k) => seen.has(k));
+}
+// Required deps of the selection that are neither selected nor already deployed.
+function missingDepsFor(selected) {
+  const g = depGraph();
+  const sel = new Set(selected);
+  const missing = new Set();
+  for (const k of selected) for (const d of (g[k] || [])) {
+    if (!sel.has(d) && deployStates[d] !== 'done') missing.add(d);
+  }
+  return latestLayers.map((l) => l.key).filter((k) => missing.has(k));
+}
 
 // ---- Guided step rail ----
 const STEP_ORDER = ['credentials', 'deploy', 'whatsapp', 'data', 'done'];
@@ -225,13 +252,33 @@ function openOptions() {
 function startWithOptions() {
   const selectedLayers = [...document.querySelectorAll('#optLayers input:checked')].map((c) => c.value);
   const options = { skipKitchenSimulator: q('#optSkipKitchen').checked };
+  const missing = missingDepsFor(selectedLayers);
+  if (missing.length) { showDepConfirm(selectedLayers, missing, options); return; }
+  launchDeploy(selectedLayers, options);
+}
+function launchDeploy(selectedLayers, options) {
   q('#options').hidden = true;
+  q('#depConfirm').hidden = true;
   hideFailBanner();
   setStep('deploy');
   q('#startBtn').disabled = true;
   q('#startBtn').textContent = 'Deploying...';
   showBusy('Starting deployment...', 'deploy');
   command({ cmd: 'start', selectedLayers, options });
+}
+// Confirm modal when a subset selection is missing required dependencies.
+function showDepConfirm(selectedLayers, missing, options) {
+  const list = q('#depList');
+  list.innerHTML = '';
+  for (const k of missing) {
+    const meta = getLayerMeta(k);
+    const li = document.createElement('li');
+    li.textContent = (meta && meta.name) ? `${meta.name} (${k})` : k;
+    list.appendChild(li);
+  }
+  q('#depConfirm').hidden = false;
+  q('#depAdd').onclick = () => launchDeploy(closureFor(selectedLayers), options);
+  q('#depCancel').onclick = () => { q('#depConfirm').hidden = true; };
 }
 q('#optionsBtn').addEventListener('click', openOptions);
 q('#optionsCancel').addEventListener('click', () => { q('#options').hidden = true; });

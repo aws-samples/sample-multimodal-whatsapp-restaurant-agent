@@ -288,3 +288,7 @@ h2 { font: 700 10px var(--sans); letter-spacing: .12em; text-transform: uppercas
 
 /* Theme toggle button in the header. */
 #themeBtn { min-width: 96px; }
+
+/* Dependency-confirm modal list (subset deploy missing prerequisites). */
+.dep-list { margin: 6px 0 4px; padding-left: 20px; }
+.dep-list li { font: 13px var(--mono); color: var(--warn); margin: 3px 0; }
