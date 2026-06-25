@@ -76,6 +76,7 @@ ONLY_COMPONENT=""      # empty = deploy all layers; when set, run ONLY that one
 WITH_DEPS=false        # --with-deps: with --only, also deploy missing required deps
 ONLY_DEPS=""           # (internal) extra dep keys to deploy alongside --only target
 CLOSURE_SET=""         # (internal) the --only target's full dependency closure
+SECRETS_INCOMPLETE=false  # (internal) set true when a Meta secret is empty after the webhook layer
 LOW_STORAGE_MODE=false # --low-storage-mode: wipe sibling node_modules before each npm install
 ASSUME_YES=false       # --yes / --non-interactive: never block on a prompt
 # --skip-kitchen-simulator: the order-notifier (Task 27) ALWAYS deploys the
@@ -447,6 +448,30 @@ dep_satisfied() {
   outputs_present "$WORKSPACE_ROOT/$OUTPUTS_DIR/$c.json" && return 0
   local s; s="$(layer_stack "$c")"
   [ -n "$s" ] && [ -n "$(stack_exists "$s" "$HEAL_REGION")" ]
+}
+
+# warn_if_secrets_empty - after the webhook layer, flag any Meta secret whose
+# container exists but holds no value (presence only; never prints the value).
+# An empty secret means the WhatsApp agent cannot verify the webhook or reply,
+# so we warn loudly and mark the deploy as not fully serviceable. A container
+# that does not exist yet (webhook not deployed) is skipped silently.
+warn_if_secrets_empty() {
+  local names=("${PROJECT_PREFIX}-wa-access-token" "${PROJECT_PREFIX}-wa-app-secret" "${PROJECT_PREFIX}-wa-verify-token")
+  local empties=() n exists val
+  for n in "${names[@]}"; do
+    exists=$(aws secretsmanager describe-secret --region "$HEAL_REGION" --secret-id "$n" --query 'Name' --output text 2>/dev/null || echo "")
+    [ -n "$exists" ] || continue
+    val=$(aws secretsmanager get-secret-value --region "$HEAL_REGION" --secret-id "$n" --query 'SecretString' --output text 2>/dev/null || echo "")
+    if [ -z "$val" ] || [ "$val" = "None" ]; then empties+=("$n"); fi
+  done
+  if [ "${#empties[@]}" -gt 0 ]; then
+    SECRETS_INCOMPLETE=true
+    print_warning "Meta secret(s) are EMPTY: ${empties[*]}"
+    print_warning "The WhatsApp agent will NOT verify its webhook or reply until these hold values."
+    print_warning "Populate them via the guided setup:"
+    print_warning "  cd scripts/whatsapp-setup && node whatsapp-setup.mjs   (choose Pre-deploy)"
+    print_warning "Or the web installer's Configure WhatsApp step: node scripts/web-ui-deployment/server.mjs"
+  fi
 }
 
 # should_deploy <component> - returns 0 when this layer should run, 1 when it
@@ -1119,6 +1144,10 @@ fi
 
 WEBHOOK_URL=$(json_val "$WORKSPACE_ROOT/$OUTPUTS_DIR/wa-webhook.json" "WebhookStack" "WebhookUrl")
 
+# After the webhook layer, flag any empty Meta secret so a deploy never silently
+# looks complete while the agent cannot actually reply (presence-only check).
+warn_if_secrets_empty
+
 ################################################################################
 # Layer 9 - OrderNotifierStack (wa-order-notifier) - proactive order updates.
 #
@@ -1195,7 +1224,13 @@ fi
 print_section "Deployment summary"
 
 if [ -n "$WEBHOOK_URL" ]; then
-  printf 'Your WhatsApp webhook is live at %s - configure it in the Meta App dashboard to test.\n' "$WEBHOOK_URL"
+  if [ "$SECRETS_INCOMPLETE" = true ]; then
+    printf 'Infrastructure is deployed, but Meta secrets are EMPTY, so the agent will not reply yet.\n'
+    printf 'Webhook endpoint: %s\n' "$WEBHOOK_URL"
+    print_warning "Finish the WhatsApp setup (above) before testing - the deploy is not yet serviceable."
+  else
+    printf 'Your WhatsApp webhook is live at %s - configure it in the Meta App dashboard to test.\n' "$WEBHOOK_URL"
+  fi
 else
   print_info "Backend layers deployed. The webhook endpoint is not live yet because one or more"
   print_info "of the not-yet-implemented layers (memory / runtimes / webhook) was skipped."

@@ -130,6 +130,7 @@ function connect() {
     const { ok, summary } = JSON.parse(e.data);
     hideBusy();
     hideGate();
+    gateValueCache = {};  // flow finished; drop any retained secret/sensitive values
     if (ok) { setStep('done'); hideFailBanner(); }
     setFinal(ok, summary);
     logLine(summary, ok ? 'muted' : 'err');
@@ -145,6 +146,7 @@ function connect() {
   });
 
   es.addEventListener('secretStatus', () => {
+    gateValueCache = {};  // server confirmed the put; safe to discard retained secrets
     logLine('Secrets populated in AWS Secrets Manager (values never shown).', 'muted');
   });
 
@@ -174,6 +176,10 @@ let currentGate = null;
 let selectedLayerKey = null;
 let latestLayers = [];
 let deployStates = {};
+// Secret/sensitive gate values retained in memory across an error re-emit so an
+// operator never loses what they typed (confirm-before-clear). Cleared only
+// when the server acks success (secretStatus), on skip, or on done.
+let gateValueCache = {};
 
 // ---- Client-side dependency closure (mirrors lib/deps.mjs for the UI) ----
 function depGraph() {
@@ -441,6 +447,12 @@ function renderGate(data) {
     }
   }
 
+  // Restore secret/sensitive values retained across an error re-emit, so the
+  // operator does not have to re-type them when fixing a validation/prereq error.
+  for (const el of form.querySelectorAll('[data-secret], [data-sensitive]')) {
+    if (gateValueCache[el.name]) el.value = gateValueCache[el.name];
+  }
+
   q('#gateSubmit').textContent = data.submitLabel || (data.action === 'wire-webhook' ? 'Wire webhook' : 'Continue');
   q('#gate').hidden = false;
 }
@@ -451,19 +463,23 @@ function submitGate() {
     if (el.type === 'checkbox') values[el.name] = el.checked;
     else if (el.value.trim() !== '') values[el.name] = el.value.trim();
   }
+  // Retain secret/sensitive values in memory (confirm-before-clear): if the
+  // server re-emits this gate with an error, renderGate restores them. They are
+  // discarded only once the server acks success (secretStatus), or on skip/done.
+  for (const el of document.querySelectorAll('#gateForm [data-secret], #gateForm [data-sensitive]')) {
+    if (el.value) gateValueCache[el.name] = el.value;
+  }
   const isData = currentGate && currentGate.kind === 'synthetic-data';
   const cmd = isData ? 'submitData' : 'submitMeta';
   showBusy(isData ? 'Seeding demo data...' : 'Saving WhatsApp settings...', isData ? 'synthetic' : 'meta');
   command({ cmd, values });
-  // Clear secret + sensitive (PII) inputs from the DOM immediately after submit.
-  for (const el of document.querySelectorAll('#gateForm [data-secret], #gateForm [data-sensitive]')) el.value = '';
   hideGate();
 }
 
 function hideGate() { q('#gate').hidden = true; currentGate = null; }
 
 q('#gateSubmit').addEventListener('click', submitGate);
-q('#gateSkip').addEventListener('click', () => { showBusy('Finishing up...', 'skip'); command({ cmd: 'skip' }); hideGate(); });
+q('#gateSkip').addEventListener('click', () => { gateValueCache = {}; showBusy('Finishing up...', 'skip'); command({ cmd: 'skip' }); hideGate(); });
 q('#metaBtn').addEventListener('click', () => { showBusy('Loading WhatsApp configuration...', 'meta'); command({ cmd: 'metaOnly' }); });
 q('#dataBtn').addEventListener('click', () => { showBusy('Preparing demo-data form...', 'synthetic'); command({ cmd: 'syntheticOnly' }); });
 q('#recheckBtn').addEventListener('click', () => { showBusy('Checking AWS credentials...', 'recheck'); command({ cmd: 'recheckIdentity' }); });

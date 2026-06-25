@@ -292,8 +292,19 @@ async function runMetaPre() {
       sse('secretStatus', { populated: true });
       return res;
     }
-    extra = res.needChoice ? { choice: res.needChoice } : { error: res.reason || res.stage || 'unknown error' };
-    metaLog(res.needChoice ? `Multiple ${res.needChoice.kind}s found - choose one.` : `WhatsApp setup needs attention: ${extra.error}.`);
+    if (res.needChoice) {
+      extra = { choice: res.needChoice };
+      metaLog(`Multiple ${res.needChoice.kind}s found - choose one.`);
+    } else if (res.stage === 'secrets-missing') {
+      extra = { error:
+        `The WhatsApp webhook layer is not deployed yet, so its Secrets Manager containers (${res.reason}) ` +
+        `do not exist. Deploy it first (run the full deploy, or "./scripts/deploy-all.sh --only wa-webhook --with-deps"), ` +
+        `then submit again. Your entries above are kept.` };
+      metaLog('WhatsApp secrets cannot be saved yet: deploy the webhook layer first (your entries are kept).');
+    } else {
+      extra = { error: res.reason || res.stage || 'unknown error' };
+      metaLog(`WhatsApp setup needs attention: ${extra.error}.`);
+    }
   }
 }
 
