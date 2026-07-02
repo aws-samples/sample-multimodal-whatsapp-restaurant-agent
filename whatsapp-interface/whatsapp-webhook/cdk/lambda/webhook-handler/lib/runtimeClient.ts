@@ -13,16 +13,21 @@ export interface ChatPayload {
   text: string;
   images: Array<{ format: string; bytes_b64: string }>;
   documents: Array<{ format: string; name: string; bytes_b64: string }>;
+  /** INBOUND WhatsApp message id, threaded so the runtime can refresh the
+   *  typing indicator across a long async turn (async-reply-delivery R7). */
+  message_id?: string;
 }
 
-export interface ChatResult {
-  // Option C status shape: the runtime sends directly via the Sender Lambda,
-  // so there is no reply to relay - this is just a status for the worker.
-  ok?: boolean;
-  messages_sent?: number;
-  unsupported_attachments?: unknown;
-  // Legacy field from pre-Option-C runtime builds; ignored by the worker now.
-  reply?: string;
+/** Async-processing ACK (async-reply-delivery Move A). The runtime now
+ *  acknowledges the invocation immediately ({accepted:true}) and continues the
+ *  turn in the background, delivering the reply out-of-band via the Sender
+ *  Lambda. The worker reads ONLY this ack - never the turn result - so it is
+ *  never blocked for the model turn. `accepted:false` is a permanent reject
+ *  (e.g. missing_customer_id); a null return is a transport-level dispatch
+ *  failure the worker retries. */
+export interface InvokeAck {
+  accepted?: boolean;
+  error?: string;
 }
 
 /** Deterministic AgentCore runtimeSessionId for a customer_id (>= 33 chars):
@@ -34,7 +39,7 @@ export function runtimeSessionId(customerId: string): string {
 
 /** Invoke the Chat Runtime with the multimodal payload; return its parsed JSON
  *  response or null on failure. */
-export async function invokeChat(payload: ChatPayload): Promise<ChatResult | null> {
+export async function invokeChat(payload: ChatPayload): Promise<InvokeAck | null> {
   const arn = process.env.CHAT_RUNTIME_ARN;
   if (!arn) {
     console.error('CHAT_RUNTIME_ARN not set; cannot invoke Chat Runtime');
@@ -61,7 +66,7 @@ export async function invokeChat(payload: ChatPayload): Promise<ChatResult | nul
     if (!body) return null;
     // The SDK streaming blob exposes transformToString() in the Node runtime.
     const text = await (body as { transformToString(): Promise<string> }).transformToString();
-    return text ? (JSON.parse(text) as ChatResult) : null;
+    return text ? (JSON.parse(text) as InvokeAck) : null;
   } catch (err) {
     console.warn(`Chat Runtime invoke failed for ${customerId}: ${String(err)}`);
     return null;
@@ -72,14 +77,9 @@ export interface VoiceNotePayload {
   session_id: string;
   customer_id: string;
   audio_b64: string; // base64 Ogg Opus voice note
-}
-
-export interface VoiceNoteResult {
-  audio_b64?: string; // base64 Ogg Opus spoken reply (R7.5)
-  fallback_text?: string; // could-not-understand text (R7.6) when no audio
-  user_transcript?: string;
-  assistant_transcript?: string;
-  error?: string;
+  /** INBOUND WhatsApp message id, threaded so the runtime can refresh the
+   *  typing indicator across a long async turn (async-reply-delivery R7). */
+  message_id?: string;
 }
 
 /** Invoke the VoiceNotes Runtime with the Ogg Opus voice note (Task 12.5,
@@ -89,9 +89,11 @@ export interface VoiceNoteResult {
  *  warm microVM (no per-note container cold start). Redeployed runtime images
  *  propagate via the runtime's short idleRuntimeSessionTimeout (lifecycle
  *  config), which recycles the microVM between exchanges - not by forcing a
- *  fresh transport id per note. Returns the parsed JSON response or null on an
- *  invoke-level failure. */
-export async function invokeVoiceNote(payload: VoiceNotePayload): Promise<VoiceNoteResult | null> {
+ *  fresh transport id per note. Returns the runtime's async ACK
+ *  ({accepted:true}) or null on an invoke-level (transport) failure. The
+ *  runtime delivers the audio reply out-of-band via the Sender Lambda; the
+ *  worker never receives the audio. */
+export async function invokeVoiceNote(payload: VoiceNotePayload): Promise<InvokeAck | null> {
   const arn = process.env.VOICENOTES_RUNTIME_ARN;
   if (!arn) {
     console.error('VOICENOTES_RUNTIME_ARN not set; cannot invoke VoiceNotes Runtime');
@@ -117,7 +119,7 @@ export async function invokeVoiceNote(payload: VoiceNotePayload): Promise<VoiceN
     const body = resp.response;
     if (!body) return null;
     const text = await (body as { transformToString(): Promise<string> }).transformToString();
-    return text ? (JSON.parse(text) as VoiceNoteResult) : null;
+    return text ? (JSON.parse(text) as InvokeAck) : null;
   } catch (err) {
     console.warn(`VoiceNotes Runtime invoke failed for ${customerId}: ${String(err)}`);
     return null;

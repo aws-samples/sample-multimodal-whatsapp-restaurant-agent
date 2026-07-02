@@ -30,10 +30,10 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 # Copy application source.
-COPY handler.py ogg_codec.py bounded_sonic.py mcp_tools.py system_prompt.py memory_client.py ./
+COPY handler.py async_dispatch.py sender_client.py ogg_codec.py bounded_sonic.py mcp_tools.py system_prompt.py memory_client.py ./
 
 # Smoke test - fail the build early if imports are broken.
-RUN python -c "import handler, ogg_codec, bounded_sonic, mcp_tools, system_prompt, memory_client"
+RUN python -c "import handler, async_dispatch, sender_client, ogg_codec, bounded_sonic, mcp_tools, system_prompt, memory_client"
 
 # Non-root user per AgentCore Runtime best practice.
 RUN useradd --create-home --shell /bin/bash appuser \
@@ -48,4 +48,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8080/ping || exit 1
 
-ENTRYPOINT ["python", "-m", "uvicorn", "handler:app", "--host", "0.0.0.0", "--port", "8080"]
+# BedrockAgentCoreApp serves /invocations + /ping and starts its own server via
+# app.run(); launch the module directly rather than pointing uvicorn at a
+# FastAPI instance (async-reply-delivery Move A).
+ENTRYPOINT ["python", "handler.py"]

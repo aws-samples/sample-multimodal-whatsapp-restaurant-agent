@@ -47,8 +47,18 @@ def test_property22_audio_in_audio_out(audio_b64, out_pcm):
     bounded session produced usable audio, and the text fallback otherwise
     (never text when audio exists, never both)."""
 
-    async def _fake_session(customer_id, input_pcm, **_kwargs):
-        return BoundedResult(output_pcm=out_pcm, ok=True)
+    has_usable_audio = len(out_pcm) >= 2  # >= one 16-bit sample
+    delivered: list[str] = []
+
+    async def deliver_audio(b64: str) -> None:
+        delivered.append(b64)
+
+    async def _fake_session(customer_id, input_pcm, on_segment=None, **_kwargs):
+        # A usable-audio turn delivers one segment via the sink; otherwise none.
+        if has_usable_audio and on_segment is not None:
+            await on_segment(out_pcm)
+            return BoundedResult(segments_delivered=1, ok=True)
+        return BoundedResult(segments_delivered=0, ok=True)
 
     with mock.patch.object(
         handler.ogg_codec, "decode_ogg_opus_to_pcm", return_value=b"\x00\x00" * 160
@@ -59,18 +69,19 @@ def test_property22_audio_in_audio_out(audio_b64, out_pcm):
     ):
         out = asyncio.run(
             handler.run_voice_note_turn(
-                {"customer_id": "wa-deadbeefdeadbeef", "audio_b64": audio_b64}
+                {"customer_id": "wa-deadbeefdeadbeef", "audio_b64": audio_b64},
+                deliver_audio=deliver_audio,
             )
         )
 
-    has_usable_audio = len(out_pcm) >= 2  # >= one 16-bit sample
     if has_usable_audio:
-        # Audio out, never the text fallback.
-        assert "audio_b64" in out
+        # Audio delivered as a voice note, never the text fallback.
+        assert out.get("delivered") == 1
         assert "fallback_text" not in out
-        # The reply payload is the encoded Ogg bytes (base64).
-        assert base64.b64decode(out["audio_b64"]) == b"OggS-reply"
+        # The delivered payload is the encoded Ogg bytes (base64).
+        assert delivered == [base64.b64encode(b"OggS-reply").decode("ascii")]
     else:
-        # No usable audio -> text fallback only (R7.6).
+        # No usable audio -> text fallback only (R7.6), nothing delivered.
         assert "fallback_text" in out
-        assert "audio_b64" not in out
+        assert "delivered" not in out
+        assert delivered == []

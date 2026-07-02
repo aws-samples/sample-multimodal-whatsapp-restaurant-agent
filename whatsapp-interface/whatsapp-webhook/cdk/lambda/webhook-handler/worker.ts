@@ -17,6 +17,7 @@ import type { RawEvent } from './lib/dispatch.js';
 import { handleChatMessage } from './lib/textHandler.js';
 import { handleVoiceNote } from './lib/audioHandler.js';
 import { handleCallEvent } from './lib/callsSignaling.js';
+import { claimMessage, releaseMessage } from './lib/windowTable.js';
 
 let accessTokenCache: string | undefined;
 
@@ -61,14 +62,36 @@ async function processRecord(record: any, accessToken: string): Promise<void> {
   // message events: normalize + route to the Chat / VoiceNotes runtime.
   const msg = normalizeMessage(envelope.data);
   const route = routeOf(msg);
-  if (route === ROUTE_CHAT) {
-    if (!accessToken) throw new Error('access token unavailable; cannot serve chat message');
-    await handleChatMessage(msg, accessToken);
-  } else if (route === ROUTE_VOICENOTE) {
-    if (!accessToken) throw new Error('access token unavailable; cannot serve voice note');
-    await handleVoiceNote(msg, accessToken);
-  } else {
+  if (route !== ROUTE_CHAT && route !== ROUTE_VOICENOTE) {
     console.debug(`ignoring message of type ${msg.msgType}`);
+    return;
+  }
+  if (!accessToken) {
+    throw new Error(`access token unavailable; cannot serve ${route} message`);
+  }
+
+  // Idempotency (async-reply-delivery R6): claim the WhatsApp message id BEFORE
+  // dispatch so an SQS at-least-once redelivery does not produce a second turn.
+  // A duplicate is skipped; a dispatch failure RELEASES the claim so the retry
+  // can re-claim and re-dispatch.
+  const claim = await claimMessage(msg.messageId);
+  if (claim === 'duplicate') {
+    console.info(`skipping duplicate delivery of message ${msg.messageId}`);
+    return;
+  }
+
+  try {
+    if (route === ROUTE_CHAT) {
+      await handleChatMessage(msg, accessToken);
+    } else {
+      await handleVoiceNote(msg, accessToken);
+    }
+  } catch (err) {
+    // Dispatch failed (the runtime did not accept the turn). Release the claim
+    // so the SQS redelivery can re-claim, then rethrow so this record is
+    // reported as a batch item failure and redelivered / DLQ'd.
+    await releaseMessage(msg.messageId);
+    throw err;
   }
 }
 

@@ -30,12 +30,16 @@ Heavy deps (fastapi, strands, av) are imported lazily / guarded so a bare
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
+from typing import Awaitable, Callable, Optional
 
+import async_dispatch
 import bounded_sonic
 import ogg_codec
+import sender_client
 
 # Configure root logging to INFO (force=True overrides uvicorn's handler config)
 # so the bounded-Sonic diagnostics in bounded_sonic surface in the runtime log.
@@ -55,12 +59,26 @@ COULD_NOT_UNDERSTAND = (
 )
 
 
-async def run_voice_note_turn(payload: dict) -> dict:
-    """Run one bounded voice-note turn end to end (Ogg in -> Ogg out).
+# --- Runtime-owned per-segment delivery (async-reply-delivery Move B / Step 2) -
+# Each spoken SEGMENT is delivered as its own WhatsApp voice note (mirrors how
+# the chat runtime sends each message separately): the model narrates ("let me
+# check your cart"), calls a tool, then speaks the answer -> two notes. The
+# synchronous Lambda invoke payload limit is 6 MB; base64 inflates raw audio by
+# ~1/3, so ~4.5 MB of Ogg Opus fits per note. A segment that would exceed the
+# limit degrades to a text note (R3.9) rather than failing the invoke.
+MAX_AUDIO_B64_CHARS = 6_000_000
 
-    Returns a dict with either ``audio_b64`` (a spoken Ogg Opus reply) or
-    ``fallback_text`` (the could-not-understand message, R7.6). Never raises:
-    any failure degrades to the text fallback so the worker always has a reply."""
+
+async def run_voice_note_turn(
+    payload: dict,
+    deliver_audio: Optional[Callable[[str], Awaitable[None]]] = None,
+) -> dict:
+    """Run one bounded voice-note turn. The Sonic session splits the reply into
+    one or more speech SEGMENTS (narration before a tool, the answer after it);
+    each 24 kHz PCM segment is encoded to Ogg Opus and handed to ``deliver_audio``
+    (which sends it as its own voice note). Returns ``{"delivered": n}`` on
+    success, or ``{"fallback_text": ...}`` when no usable audio was produced
+    (R7.6). Never raises: failures degrade to the text fallback."""
     customer_id = (payload.get("customer_id") or payload.get("session_id") or "").strip()
     if not customer_id:
         return {"error": "missing_customer_id"}
@@ -77,23 +95,31 @@ async def run_voice_note_turn(payload: dict) -> dict:
         logger.info("voice-note decode failed for %s: %s", customer_id, exc)
         return {"fallback_text": COULD_NOT_UNDERSTAND}
 
-    # --- bounded Nova 2 Sonic speech-to-speech turn (reads/writes memory) ---
-    result = await bounded_sonic.run_bounded_session(customer_id, input_pcm)
-    if not result.has_audio:
+    # Per-segment sink: encode one 24 kHz PCM segment to Ogg Opus (R7.4 out) and
+    # deliver it. A single segment that fails to encode is skipped, not fatal.
+    async def _on_segment(pcm: bytes) -> None:
+        try:
+            reply_ogg = ogg_codec.encode_pcm_to_ogg_opus(pcm)
+        except ogg_codec.OggEncodeError as exc:
+            logger.warning("voice segment encode failed for %s: %s", customer_id, exc)
+            return
+        b64 = base64.b64encode(reply_ogg).decode("ascii")
+        if deliver_audio is not None:
+            await deliver_audio(b64)
+
+    result = await bounded_sonic.run_bounded_session(
+        customer_id,
+        input_pcm,
+        on_segment=_on_segment if deliver_audio is not None else None,
+    )
+    if result.segments_delivered == 0:
         logger.info(
             "voice-note produced no usable audio for %s (ok=%s, err=%s)",
             customer_id, result.ok, result.error,
         )
         return {"fallback_text": COULD_NOT_UNDERSTAND}
 
-    # --- encode the 24 kHz spoken reply back to Ogg Opus (R7.4 out) ---
-    try:
-        reply_ogg = ogg_codec.encode_pcm_to_ogg_opus(result.output_pcm)
-    except ogg_codec.OggEncodeError as exc:
-        logger.warning("voice-note reply encode failed for %s: %s", customer_id, exc)
-        return {"fallback_text": COULD_NOT_UNDERSTAND}
-
-    out = {"audio_b64": base64.b64encode(reply_ogg).decode("ascii")}
+    out: dict = {"delivered": result.segments_delivered}
     if result.user_transcript:
         out["user_transcript"] = result.user_transcript
     if result.assistant_transcript:
@@ -101,36 +127,81 @@ async def run_voice_note_turn(payload: dict) -> dict:
     return out
 
 
-# --- AgentCore Runtime HTTP surface -----------------------------------------
-try:
-    from fastapi import FastAPI, Request
+async def _run_voice_turn_guarded(payload: dict) -> None:
+    """Run one voice-note turn and DELIVER each segment out-of-band as its own
+    voice note, owning reliability (R4): on no usable audio, send the
+    could-not-understand text; on an unexpected failure, send it and record
+    async_turn_failed, so no acknowledged message is left without a reply or a
+    recorded failure."""
+    customer_id = (payload.get("customer_id") or payload.get("session_id") or "").strip()
+    if not customer_id:
+        return
+    async_dispatch.turn_started("voicenote", customer_id)
 
-    app = FastAPI(title="whatsapp-voicenotes-runtime")
+    async def deliver_audio(b64: str) -> None:
+        if len(b64) > MAX_AUDIO_B64_CHARS:
+            logger.warning(
+                "[async] voice segment too large for %s (%d b64 chars > %d); sending text",
+                customer_id, len(b64), MAX_AUDIO_B64_CHARS,
+            )
+            await asyncio.to_thread(sender_client.send_text, customer_id, COULD_NOT_UNDERSTAND, "voicenote")
+            return
+        await asyncio.to_thread(sender_client.send_audio, customer_id, b64, "voicenote")
 
-    @app.get("/ping")
-    def ping() -> dict:
-        """AgentCore Runtime health probe."""
-        return {"status": "ok"}
-
-    @app.post("/invocations")
-    async def invocations(request: Request) -> dict:
-        """AgentCore Runtime invocation endpoint: Ogg Opus in, Ogg Opus out."""
-        payload = await request.json()
+    try:
+        result = await run_voice_note_turn(payload, deliver_audio=deliver_audio)
+        if result.get("fallback_text"):
+            await asyncio.to_thread(
+                sender_client.send_text, customer_id, result["fallback_text"], "voicenote"
+            )
+        async_dispatch.turn_completed("voicenote", customer_id)
+    except Exception:  # noqa: BLE001 - never let a turn die silently
+        async_dispatch.turn_failed("voicenote", customer_id)
+        logger.exception("[async] voice-note turn failed for %s", customer_id)
         try:
-            return await run_voice_note_turn(payload)
-        except Exception as exc:  # noqa: BLE001 - never leak a stack trace
-            logger.exception("voice-note turn failed")
-            return {"error": "voice_note_turn_failed", "fallback_text": COULD_NOT_UNDERSTAND, "detail": str(exc)}
+            await asyncio.to_thread(
+                sender_client.send_text, customer_id, COULD_NOT_UNDERSTAND, "voicenote"
+            )
+        except Exception:  # noqa: BLE001 - best-effort fallback notify
+            logger.exception("failed to send the voice error fallback for %s", customer_id)
 
-except ImportError:  # pragma: no cover - smoke-test path without web deps
+
+# --- AgentCore Runtime surface (asynchronous processing) --------------------
+# async-reply-delivery Move A: acknowledge each invocation immediately and run
+# the turn in the background (serialized per customer, Component 2a), so the
+# webhook worker Lambda is never blocked for the Nova Sonic turn. The runtime
+# OWNS delivery (Move B): it sends the audio reply via the Sender Lambda rather
+# than returning it to the worker. bedrock_agentcore is import-guarded so the
+# Docker smoke test / unit tests import this module without the SDK.
+try:
+    from bedrock_agentcore import BedrockAgentCoreApp
+
+    app = BedrockAgentCoreApp()
+
+    @app.entrypoint
+    def invoke(payload: dict) -> dict:
+        """AgentCore async entrypoint: ack immediately, run the voice-note turn
+        in the background (serialized per customer) and deliver the reply
+        out-of-band. The worker reads only the ack."""
+        payload = payload or {}
+        customer_id = (payload.get("customer_id") or payload.get("session_id") or "").strip()
+        if not customer_id:
+            return {"accepted": False, "error": "missing_customer_id"}
+        message_id = (payload.get("message_id") or "").strip()
+        return async_dispatch.dispatch_turn(
+            app,
+            "voicenote_turn",
+            customer_id,
+            lambda: async_dispatch.with_typing_refresh(
+                lambda: _run_voice_turn_guarded(payload), message_id, sender_client.send_typing
+            ),
+        )
+
+except ImportError:  # pragma: no cover - smoke-test path without the SDK
     app = None  # type: ignore[assignment]
 
 
 if __name__ == "__main__":  # pragma: no cover
-    import uvicorn
-
-    uvicorn.run(
-        "handler:app",
-        host=os.environ.get("HOST", "0.0.0.0"),
-        port=int(os.environ.get("PORT", "8080")),
-    )
+    if app is None:
+        raise SystemExit("bedrock_agentcore is not installed; cannot start the runtime")
+    app.run()

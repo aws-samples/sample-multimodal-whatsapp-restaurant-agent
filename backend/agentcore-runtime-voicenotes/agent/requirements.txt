@@ -14,6 +14,12 @@ fastapi==0.123.9
 uvicorn[standard]>=0.31.1
 boto3>=1.35.0
 
+# AgentCore Runtime SDK - BedrockAgentCoreApp (async entrypoint,
+# add_async_task/complete_async_task, /ping HealthyBusy) so the runtime
+# acknowledges immediately and processes the voice-note turn in the background,
+# delivering the reply out-of-band (async-reply-delivery Move A/B).
+bedrock-agentcore>=0.1.0
+
 # Strands Agents with the bidirectional (Nova Sonic) extra - Task 12.3.
 strands-agents[bidi]==1.37.0
 
