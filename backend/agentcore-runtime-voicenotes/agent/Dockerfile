@@ -1,39 +1,48 @@
-# WhatsApp VoiceNotes Runtime container image (PLACEHOLDER for Task 12.1).
+# WhatsApp VoiceNotes Runtime container image (TypeScript / Node).
 #
-# AgentCore Runtime requires ARM64 OCI images. The CodeBuild project builds
-# this with `docker buildx --platform=linux/arm64`.
+# AgentCore Runtime requires ARM64 OCI images; the CodeBuild project builds this
+# with `docker buildx --platform=linux/arm64`. The runtime is a bounded raw
+# Amazon Nova 2 Sonic speech-to-speech session (TypeScript), replacing the prior
+# Python/strands implementation. OGG Opus transcode is done by spawning ffmpeg
+# (exact parity with the PyAV path), so ffmpeg is installed in the runtime image.
 #
-# TODO(Tasks 12.2-12.4): Add the real agent source files (ogg_codec.py,
-# bounded_sonic.py, the full handler.py, plus memory_client.py / mcp_tools.py /
-# system_prompt.py) and the OS-level libopus/ffmpeg deps PyAV needs for the
-# Ogg Opus decode/encode.
-FROM --platform=linux/arm64 public.ecr.aws/docker/library/python:3.13-slim
+# Multi-stage: a builder stage compiles TypeScript -> dist/, and a slim runtime
+# stage carries only production deps + dist + ffmpeg.
+
+# --- builder: install all deps and compile TypeScript -------------------
+FROM --platform=linux/arm64 public.ecr.aws/docker/library/node:22-slim AS builder
 
 WORKDIR /app
 
-RUN pip install --upgrade pip
+# Install deps first so the layer caches across source edits. npm ci needs the
+# lockfile and installs devDependencies (typescript) for the build.
+COPY package.json package-lock.json ./
+RUN npm ci
 
-# System deps: curl for the HEALTHCHECK, build tooling for transitive native
-# pip deps, and git (pip installs mcp-proxy-for-aws from a git+https URL, which
-# requires git on PATH). Tasks 12.2-12.4 add ffmpeg/libopus headers (PyAV) here.
+# Compile src/ -> dist/ (tsconfig excludes *.test.ts).
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# --- runtime: production deps + ffmpeg + compiled output ----------------
+FROM --platform=linux/arm64 public.ecr.aws/docker/library/node:22-slim AS runtime
+
+WORKDIR /app
+
+# ffmpeg (with libopus) for the OGG Opus decode/encode; ca-certificates for TLS.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    make \
-    curl \
-    git \
+    ffmpeg \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps first so the layer caches across source edits.
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+ENV NODE_ENV=production
 
-# Copy application source.
-COPY handler.py async_dispatch.py sender_client.py ogg_codec.py bounded_sonic.py mcp_tools.py system_prompt.py memory_client.py ./
+# Production dependencies only (no typescript/tsx).
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Smoke test - fail the build early if imports are broken.
-RUN python -c "import handler, async_dispatch, sender_client, ogg_codec, bounded_sonic, mcp_tools, system_prompt, memory_client"
+# Compiled JavaScript from the builder stage.
+COPY --from=builder /app/dist ./dist
 
 # Non-root user per AgentCore Runtime best practice.
 RUN useradd --create-home --shell /bin/bash appuser \
@@ -45,10 +54,9 @@ ENV PORT=8080
 
 EXPOSE 8080
 
+# Health check hits /ping using Node's built-in fetch (no curl needed on slim).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://localhost:8080/ping || exit 1
+    CMD node -e "fetch('http://localhost:8080/ping').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-# BedrockAgentCoreApp serves /invocations + /ping and starts its own server via
-# app.run(); launch the module directly rather than pointing uvicorn at a
-# FastAPI instance (async-reply-delivery Move A).
-ENTRYPOINT ["python", "handler.py"]
+# The Node host serves /invocations + /ping and starts its own HTTP server.
+ENTRYPOINT ["node", "dist/server.js"]
