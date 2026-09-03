@@ -1,4 +1,4 @@
-# Testing conventions - WhatsApp Restaurant AI Host
+# Testing conventions - WhatsApp Restaurant AI Host 
 
 This repo uses two property-based-testing (PBT) libraries, split by language:
 
