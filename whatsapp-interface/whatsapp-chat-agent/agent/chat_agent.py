@@ -546,51 +546,68 @@ async def _stream_turn(
         return sent_texts, updated, stop_reason
 
 
-# --- AgentCore Runtime HTTP surface -----------------------------------------
-# FastAPI is declared in requirements.txt and present in the container. Guarded
-# so a bare import for the Docker smoke test does not require the web framework.
-try:
-    from fastapi import FastAPI, Request
+# --- AgentCore Runtime surface (asynchronous processing) --------------------
+# async-reply-delivery Move A: the runtime ACKNOWLEDGES each invocation
+# immediately (a fast {"accepted": true}) and continues the turn in the
+# background, so the webhook worker Lambda is never blocked for the model turn.
+# Turns for one customer are serialized (async_dispatch, Component 2a) so a
+# second message never runs in parallel with an in-flight turn. The runtime
+# still OWNS delivery: it streams the turn and sends each assistant message to
+# WhatsApp via the Sender Lambda as it lands. bedrock_agentcore is import-guarded
+# so the Docker smoke test / unit tests import this module without the SDK.
+import async_dispatch
 
-    app = FastAPI(title="whatsapp-chat-runtime")
 
-    @app.get("/ping")
-    def ping() -> dict:
-        """AgentCore Runtime health probe."""
-        return {"status": "ok"}
-
-    @app.post("/invocations")
-    async def invocations(request: Request) -> dict:
-        """AgentCore Runtime invocation endpoint.
-
-        The runtime now OWNS delivery (Option C): it streams the turn and sends
-        each assistant message to WhatsApp via the Sender Lambda as it lands. The
-        response body is a STATUS for the worker (no `reply` to relay). On an
-        internal error we still try to tell the customer something went wrong, so
-        the worker only needs to cover a transport-level invoke failure.
-        """
-        payload = await request.json()
+async def _run_chat_turn_guarded(payload: dict) -> None:
+    """Run one chat turn to completion, owning its reliability (R4): on an
+    unexpected failure deliver the error fallback to the customer and record it
+    (async_turn_failed), so no acknowledged message is left without a reply or a
+    recorded failure. Any partial output was already delivered via the Sender
+    Lambda during the stream."""
+    customer_id = (payload.get("customer_id") or payload.get("session_id") or "").strip()
+    async_dispatch.turn_started("chat", customer_id)
+    try:
+        await run_chat_turn(payload)
+        async_dispatch.turn_completed("chat", customer_id)
+    except Exception:  # noqa: BLE001 - never let a turn die silently
+        async_dispatch.turn_failed("chat", customer_id)
+        logger.exception("[async] chat turn failed for %s", customer_id)
         try:
-            return await run_chat_turn(payload)
-        except Exception as exc:  # noqa: BLE001 - never leak a stack trace to the caller
-            logger.exception("chat turn failed")
-            try:
-                cid = (payload.get("customer_id") or payload.get("session_id") or "").strip()
-                if cid:
-                    await _default_send(cid, FALLBACK_MESSAGE, "chat")
-            except Exception:  # noqa: BLE001 - best-effort fallback notify
-                logger.exception("failed to send the error fallback for the chat turn")
-            return {"ok": False, "error": "chat_turn_failed", "detail": str(exc)}
+            if customer_id:
+                await _default_send(customer_id, FALLBACK_MESSAGE, "chat")
+        except Exception:  # noqa: BLE001 - best-effort fallback notify
+            logger.exception("failed to send the chat error fallback for %s", customer_id)
 
-except ImportError:  # pragma: no cover - smoke-test path without web deps
+
+try:
+    from bedrock_agentcore import BedrockAgentCoreApp
+
+    app = BedrockAgentCoreApp()
+
+    @app.entrypoint
+    def invoke(payload: dict) -> dict:
+        """AgentCore async entrypoint: ack immediately, run the turn in the
+        background (serialized per customer). The worker reads only the ack;
+        it never waits for the turn to finish."""
+        payload = payload or {}
+        customer_id = (payload.get("customer_id") or payload.get("session_id") or "").strip()
+        if not customer_id:
+            return {"accepted": False, "error": "missing_customer_id"}
+        message_id = (payload.get("message_id") or "").strip()
+        return async_dispatch.dispatch_turn(
+            app,
+            "chat_turn",
+            customer_id,
+            lambda: async_dispatch.with_typing_refresh(
+                lambda: _run_chat_turn_guarded(payload), message_id, sender_client.send_typing
+            ),
+        )
+
+except ImportError:  # pragma: no cover - smoke-test path without the SDK
     app = None  # type: ignore[assignment]
 
 
 if __name__ == "__main__":  # pragma: no cover
-    import uvicorn
-
-    uvicorn.run(
-        "chat_agent:app",
-        host=os.environ.get("HOST", "0.0.0.0"),
-        port=int(os.environ.get("PORT", "8080")),
-    )
+    if app is None:
+        raise SystemExit("bedrock_agentcore is not installed; cannot start the runtime")
+    app.run()

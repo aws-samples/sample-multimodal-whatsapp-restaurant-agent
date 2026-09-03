@@ -63,3 +63,35 @@ def send_message(customer_id: str, text: str, channel: str = "chat") -> bool:
     except Exception as exc:  # noqa: BLE001 - delivery must never crash the turn
         logger.exception("sender lambda invoke failed for %s: %s", customer_id, exc)
         return False
+
+
+def send_typing(message_id: str) -> bool:
+    """Relay the WhatsApp typing indicator for an inbound message (best-effort).
+
+    Invokes the Sender Lambda with kind='typing' so the indicator is refreshed
+    across a long async turn (async-reply-delivery R7). Needs only the inbound
+    message id (no recipient resolution). Never raises - returns False on any
+    problem so a refresh failure never disturbs the turn.
+    """
+    if not message_id:
+        return False
+    arn = os.environ.get(ENV_SENDER_ARN, "").strip()
+    if not arn:
+        logger.error("%s not set; cannot relay the typing indicator", ENV_SENDER_ARN)
+        return False
+    try:
+        import boto3  # lazy: keeps the module importable without boto3
+
+        client = boto3.client("lambda", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        resp = client.invoke(
+            FunctionName=arn,
+            InvocationType="RequestResponse",
+            Payload=json.dumps({"kind": "typing", "message_id": message_id}).encode("utf-8"),
+        )
+        raw = resp.get("Payload")
+        body = raw.read().decode("utf-8") if raw is not None else ""
+        data = json.loads(body) if body else {}
+        return bool(data.get("ok"))
+    except Exception as exc:  # noqa: BLE001 - typing indicator must never crash the turn
+        logger.debug("typing relay invoke failed for message %s: %s", message_id, exc)
+        return False

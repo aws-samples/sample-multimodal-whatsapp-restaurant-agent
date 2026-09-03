@@ -12,6 +12,12 @@ fastapi==0.123.9
 uvicorn[standard]>=0.31.1
 boto3>=1.35.0
 
+# AgentCore Runtime SDK - provides BedrockAgentCoreApp (async entrypoint,
+# add_async_task/complete_async_task, and the /ping HealthyBusy status) so the
+# runtime acknowledges immediately and processes the turn in the background
+# (async-reply-delivery Move A).
+bedrock-agentcore>=0.1.0
+
 # Strands Agents - standard (non-bidi) Agent over the Bedrock Converse API.
 strands-agents==1.37.0
 

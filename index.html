@@ -605,7 +605,7 @@ const NODES = {
   webhookGw:     { x: 253, y: 110, w: 180, h: 78, label: 'Webhook API GW',  sub: 'HTTPS - AWS-managed cert',      icon: 'apigw' },
   webhookLambda: { x: 253, y: 280, w: 180, h: 82, label: 'Webhook Ingest',  sub: '<b>verify / sig / enqueue</b>', icon: 'lambda' },
   inboundQueue:  { x: 253, y: 480, w: 180, h: 78, label: 'Inbound Queue',   sub: '<b>SQS</b> + dead-letter queue', icon: 'sqs' },
-  worker:        { x: 253, y: 670, w: 180, h: 82, label: 'Webhook Worker',  sub: '<b>dispatch / invoke / reply</b>', icon: 'lambda' },
+  worker:        { x: 253, y: 670, w: 180, h: 82, label: 'Webhook Worker',  sub: '<b>dispatch / invoke / ack</b>', icon: 'lambda' },
   // Sender Lambda (Option C): the runtimes invoke this to deliver each message.
   // It resolves the recipient wa_id from the window table and sends via the
   // Messages API, so the runtimes hold no Access_Token and no phone number.
@@ -671,10 +671,16 @@ const EDGES = [
   { id: 'sender-window',   from: 'senderLambda', to: 'winTable',     curve: -210, color: 'var(--db)',  kind: 'db' },
   { id: 'sender-secret',   from: 'senderLambda', to: 'secrets',      curve: -130, color: 'var(--db)',  kind: 'db' },
   { id: 'sender-messages', from: 'senderLambda', to: 'metaMessages', curve:   60, color: 'var(--sig)', kind: 'sig' },
-  // voice-note (speech-to-speech) path: the WORKER invokes the VoiceNotes Runtime + audio reply back
+  // voice-note (speech-to-speech) path: the WORKER dispatches the VoiceNotes
+  // Runtime with a FAST ACK (the runtime returns accepted immediately and
+  // processes the turn asynchronously); the spoken reply is delivered OUT OF
+  // BAND via the Sender Lambda, exactly like the Chat Runtime - it does NOT
+  // return to the worker.
   { id: 'lambda-vn',      from: 'worker',        to: 'voiceNotesRuntime', curve: 40, color: 'var(--sig)',  kind: 'sig' },
-  { id: 'vn-lambda',      from: 'voiceNotesRuntime', to: 'worker',        curve: -40, color: 'var(--sig)', kind: 'sig' },
-  // reply send (text + audio): the WORKER sends via the Messages API
+  { id: 'vn-sender',      from: 'voiceNotesRuntime', to: 'senderLambda',  curve: -50, color: 'var(--sig)', kind: 'sig' },
+  // voice-call SDP answer ONLY: the WORKER returns the answer to Meta via the
+  // Messages API (pre_accept then accept). Text and voice-note replies no longer
+  // ride this edge - the runtimes deliver those out of band via the Sender Lambda.
   { id: 'lambda-messages',from: 'worker',        to: 'metaMessages',  curve: 110, color: 'var(--sig)',  kind: 'sig' },
   // media fetch (HTTPS): the WORKER downloads image/document/voice-note bytes
   { id: 'lambda-media',   from: 'worker',        to: 'metaMedia',     curve: -40, color: 'var(--sig)',  kind: 'sig' },
@@ -927,7 +933,7 @@ const STEPS = [
   {
     title: 'Text: invoke the multimodal Chat Runtime (Converse + Nova Pro)',
     body: 'The <span class="hl">worker</span> invokes the <span class="hl">WhatsApp Chat Runtime</span> with <code>session_id = customer_id</code>, passing text + image + file <span class="hl">content blocks</span>. The runtime <b>reads the shared memory</b> long-term insights at start, then <b>streams</b> Amazon Nova through the Bedrock <span class="hl">Converse API</span>, emitting each assistant message as it is produced. Tool needs (menu, cart, order, locations) go gateway-only via MCP - never a direct backend call. Unsupported attachment types get a polite resend request while the rest of the message still processes.',
-    meta: { Invoke: 'session_id = customer_id', Model: 'Nova Pro via Converse', Memory: 'read long-term insights at start', Tools: 'MCP via AgentCore Gateway (gateway-only)' },
+    meta: { Invoke: 'session_id = customer_id', Async: 'worker gets an accepted ack; the turn runs async in the runtime', Model: 'Nova Pro via Converse', Memory: 'read long-term insights at start', Tools: 'MCP via AgentCore Gateway (gateway-only)' },
     nodes: ['worker', 'chatRuntime', 'sharedMemory', 'gateway', 'restApi', 'orderLambdas', 'ddbTables'],
     edges: [
       { edge: 'lambda-chat', kind: 'sig' },
@@ -985,7 +991,7 @@ const STEPS = [
   {
     title: 'Voice note: worker pulls, downloads OGG, runs a bounded Sonic session',
     body: 'The <span class="hl">Webhook Worker</span> consumes the message, derives the <code>customer_id</code> (shared Pepper), and downloads the <span class="hl">OGG Opus</span> bytes from the Media API. It invokes the <span class="hl">WhatsApp VoiceNotes Runtime</span> with the bytes and <code>session_id = customer_id</code>. The runtime <b>reads the shared memory</b> at start, <span class="hl">decodes OGG Opus to 16 kHz PCM</span>, and feeds a short, <b>bounded Nova 2 Sonic speech-to-speech session</b>. Tool needs go through the same AgentCore Gateway MCP tools as the other runtimes.',
-    meta: { Pull: 'SQS -> worker', Fetch: 'OGG Opus bytes (Media API)', Decode: 'OGG Opus -> 16 kHz PCM', Session: 'bounded Nova 2 Sonic speech-to-speech' },
+    meta: { Pull: 'SQS -> worker', Dispatch: 'fast-ack invoke; runtime replies out of band', Fetch: 'OGG Opus bytes (Media API)', Decode: 'OGG Opus -> 16 kHz PCM', Session: 'bounded Nova 2 Sonic speech-to-speech' },
     nodes: ['inboundQueue', 'worker', 'pepper', 'metaMedia', 'voiceNotesRuntime', 'sharedMemory', 'gateway', 'restApi', 'orderLambdas'],
     edges: [
       { edge: 'queue-worker', kind: 'ctrl' },
@@ -1010,21 +1016,21 @@ const STEPS = [
     ],
   },
   {
-    title: 'Voice note: encode OGG out, write memory, reply as a voice message',
-    body: 'The runtime captures the <span class="hl">24 kHz PCM</span> spoken response, <span class="hl">encodes it back to OGG Opus</span>, and <b>writes events to shared memory</b>. The audio returns to the <span class="hl">worker</span>, which sends it via the Messages API as a WhatsApp <span class="hl">AUDIO (voice) message</span> - voice in, voice out. <b>Side branch:</b> only if no usable audio is produced does the worker fall back to a short could-not-understand text reply.',
-    meta: { Encode: '24 kHz PCM -> OGG Opus', Memory: 'write events at end', Reply: 'Messages API AUDIO (voice) message', Fallback: 'text "could not understand" only if no audio' },
-    nodes: ['voiceNotesRuntime', 'sharedMemory', 'worker', 'winTable', 'metaMessages'],
+    title: 'Voice note: encode OGG out, write memory, send the voice note via the Sender Lambda',
+    body: 'The runtime captures the <span class="hl">24 kHz PCM</span> spoken response, <span class="hl">encodes it back to OGG Opus</span>, and - exactly like the Chat Runtime - <b>sends it itself</b> out of band by invoking the <span class="hl">Sender Lambda</span> with <code>{customer_id, audio_b64, channel: "voicenote"}</code>. The Sender Lambda resolves the recipient <code>wa_id</code> from the <span class="hl">Last Inbound table</span> and delivers it via the <span class="hl">Messages API</span> as a WhatsApp <span class="hl">AUDIO (voice) message</span> - voice in, voice out. The runtime also <b>writes events to shared memory</b>. The worker is never in this reply path and holds <b>no Access_Token and no phone number</b>. <b>Side branch:</b> only if no usable audio is produced does the runtime send a short could-not-understand <b>text</b> via the same Sender Lambda.',
+    meta: { Encode: '24 kHz PCM -> OGG Opus', Send: 'runtime -> Sender Lambda (audio), out of band', Recipient: 'wa_id resolved from the window table', Memory: 'write events at end', Fallback: 'text "could not understand" only if no audio' },
+    nodes: ['voiceNotesRuntime', 'senderLambda', 'winTable', 'metaMessages', 'sharedMemory'],
     edges: [
-      { edge: 'vn-lambda', kind: 'sig' },
+      { edge: 'vn-sender', kind: 'sig' },
+      { edge: 'sender-window', kind: 'db' },
+      { edge: 'sender-messages', kind: 'sig' },
       { edge: 'vn-mem', kind: 'mem' },
-      { edge: 'lambda-window', kind: 'db' },
-      { edge: 'lambda-messages', kind: 'sig' },
     ],
     packets: [
-      { edge: 'vn-mem', kind: 'mem', count: 1, delay: 0 },
-      { edge: 'vn-lambda', kind: 'sig', count: 1, delay: 300 },
-      { edge: 'lambda-window', kind: 'db', count: 1, delay: 600 },
-      { edge: 'lambda-messages', kind: 'sig', count: 1, delay: 900 },
+      { edge: 'vn-sender', kind: 'sig', count: 1, delay: 0 },
+      { edge: 'sender-window', kind: 'db', count: 1, delay: 300 },
+      { edge: 'sender-messages', kind: 'sig', count: 1, delay: 650 },
+      { edge: 'vn-mem', kind: 'mem', count: 1, delay: 1000 },
     ],
   },
   {

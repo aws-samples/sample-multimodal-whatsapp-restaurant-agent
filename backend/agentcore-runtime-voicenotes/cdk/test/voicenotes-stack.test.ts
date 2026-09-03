@@ -141,6 +141,44 @@ describe('VoiceNotesStack synth/config guard', () => {
     expect(actions).not.toContain('bedrock:Converse');
   });
 
+  test('runtime can invoke the Sender Lambda (async audio delivery), scoped to <prefix>-wa-sender', () => {
+    const template = synth();
+    const policies = template.findResources('AWS::IAM::Policy');
+    type Statement = { Sid?: string; Action?: unknown; Resource?: unknown };
+    const allStatements: Statement[] = [];
+    for (const policy of Object.values(policies) as Array<{
+      Properties: { PolicyDocument: { Statement: Statement[] } };
+    }>) {
+      allStatements.push(...policy.Properties.PolicyDocument.Statement);
+    }
+    const senderStmts = allStatements.filter((s) => s.Sid === 'InvokeSenderLambda');
+    expect(senderStmts).toHaveLength(1);
+    const stmt = senderStmts[0];
+    const raw = stmt.Action as string | string[];
+    const actions = Array.isArray(raw) ? raw : [raw];
+    expect(actions).toEqual(['lambda:InvokeFunction']);
+    // Exact deterministic ARN for the sender function - no wildcard.
+    const sub = (stmt.Resource as { 'Fn::Sub'?: [string, Record<string, unknown>] })['Fn::Sub'];
+    expect(Array.isArray(sub)).toBe(true);
+    expect(sub![0]).toBe('arn:${Partition}:lambda:${R}:${A}:function:${P}-wa-sender');
+    expect(sub![1].P).toEqual({ Ref: 'DeploymentPrefix' });
+    expect(stmt.Resource).not.toBe('*');
+  });
+
+  test('runtime carries the SENDER_LAMBDA_ARN environment variable', () => {
+    const template = synth();
+    template.hasResourceProperties('AWS::BedrockAgentCore::Runtime', {
+      EnvironmentVariables: Match.objectLike({
+        SENDER_LAMBDA_ARN: {
+          'Fn::Sub': [
+            'arn:${Partition}:lambda:${R}:${A}:function:${P}-wa-sender',
+            Match.objectLike({ P: { Ref: 'DeploymentPrefix' } }),
+          ],
+        },
+      }),
+    });
+  });
+
   test('deployment-prefix discipline holds on the runtime IAM role name', () => {
     const template = synth();
     template.hasResourceProperties('AWS::IAM::Role', {

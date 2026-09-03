@@ -157,20 +157,31 @@ export async function handleChatMessage(
   //    NOT relay a reply here - it only needs to cover a transport-level invoke
   //    failure (a null result), where the runtime never ran and thus could not
   //    have sent anything.
-  const result = await invokeChat({
+  const ack = await invokeChat({
     session_id: customerId, // R5.1
     customer_id: customerId,
     text: msg.text ?? '',
     images,
     documents,
+    message_id: msg.messageId, // typing-indicator refresh across the async turn
   });
-  if (!result) {
-    console.warn(`Chat Runtime invoke failed for ${customerId}; sending fallback`);
-    await sendText(msg.sender, COULD_NOT_PROCESS, accessToken, customerId);
-    return { status: 'invoke_failed', customerId };
+  if (!ack) {
+    // Transport-level DISPATCH failure: the runtime did not accept the turn.
+    // Throw so the SQS event-source redelivers and the message reaches the DLQ
+    // after maxReceiveCount (async-reply R1.5/R4.4). No immediate customer
+    // fallback here - a retry that succeeds would double-send. (This differs
+    // from the pre-async behavior, which swallowed the failure and sent a
+    // "could not process" text without retrying.)
+    throw new Error(`Chat Runtime dispatch failed for ${customerId}`);
+  }
+  if (ack.accepted === false) {
+    // Permanent reject (e.g. missing_customer_id) - do not retry.
+    console.warn(`Chat Runtime rejected the turn for ${customerId}: ${ack.error ?? 'unknown'}`);
+    return { status: 'rejected', customerId, reason: ack.error, unsupported };
   }
 
-  // A non-null result means the runtime handled delivery (status only, no
-  // reply to relay). Surface it for metrics/tests.
-  return { status: 'ok', customerId, unsupported };
+  // The runtime ACCEPTED the turn and owns delivery (interim narration + final
+  // answer via the Sender Lambda). The worker does not wait for or relay the
+  // reply. Surface a status for metrics/tests.
+  return { status: 'accepted', customerId, unsupported };
 }

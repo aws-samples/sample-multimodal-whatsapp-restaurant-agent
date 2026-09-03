@@ -29,7 +29,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 # Copy application source.
-COPY chat_agent.py sender_client.py session_store.py system_prompt.py memory_client.py mcp_tools.py ./
+COPY chat_agent.py async_dispatch.py sender_client.py session_store.py system_prompt.py memory_client.py mcp_tools.py ./
 
 # Smoke test - fail the build early if imports are broken.
 RUN python -c "import chat_agent"
@@ -47,4 +47,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8080/ping || exit 1
 
-ENTRYPOINT ["python", "-m", "uvicorn", "chat_agent:app", "--host", "0.0.0.0", "--port", "8080"]
+# BedrockAgentCoreApp serves /invocations + /ping and starts its own server via
+# app.run(); launch the module directly rather than pointing uvicorn at a
+# FastAPI instance (async-reply-delivery Move A).
+ENTRYPOINT ["python", "chat_agent.py"]
