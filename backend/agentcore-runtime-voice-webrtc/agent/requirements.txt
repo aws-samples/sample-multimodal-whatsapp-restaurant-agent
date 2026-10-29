@@ -24,7 +24,7 @@ av>=12.0.0
 numpy>=1.26
 
 # Strands Agents — bidirectional streaming variant (BidiAgent + Nova Sonic).
-strands-agents[bidi]==1.37.0
+strands-agents[bidi]==1.48.0
 
 # MCP client for dynamic tool discovery from AgentCore Gateway with
 # AWS IAM (SigV4) authentication.
