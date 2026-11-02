@@ -19,7 +19,7 @@ boto3>=1.35.0
 bedrock-agentcore>=0.1.0
 
 # Strands Agents - standard (non-bidi) Agent over the Bedrock Converse API.
-strands-agents==1.37.0
+strands-agents==1.48.0
 
 # MCP client for dynamic tool discovery from the AgentCore Gateway with
 # AWS IAM (SigV4) authentication.
